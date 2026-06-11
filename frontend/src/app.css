@@ -1,0 +1,114 @@
+/* Google Fonts */
+@import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Rajdhani:wght@300;400;600;700&display=swap');
+
+/* Design Tokens */
+:root {
+	/* Neon palette */
+	--neon-cyan: #00ffff;
+	--neon-pink: #ff00ff;
+	--neon-blue: #0066ff;
+	--neon-purple: #9d00ff;
+	--neon-green: #00ff88;
+
+	/* Backgrounds */
+	--dark-bg: #000000;
+	--glass-bg: rgba(0, 255, 255, 0.05);
+	--glass-border: rgba(0, 255, 255, 0.2);
+	--glass-bg-hover: rgba(0, 255, 255, 0.08);
+	--glass-border-hover: rgba(0, 255, 255, 0.4);
+
+	/* Text */
+	--text-primary: #ffffff;
+	--text-secondary: #00cccc;
+
+	/* Typography */
+	--font-heading: 'Orbitron', sans-serif;
+	--font-body: 'Rajdhani', sans-serif;
+
+	/* Spacing */
+	--section-padding: 6rem;
+	--card-padding: 2.5rem;
+	--grid-gap: 2rem;
+
+	/* Effects */
+	--border-radius: 12px;
+	--transition-speed: 0.3s;
+}
+
+/* Body */
+body {
+	margin: 0;
+	padding: 0;
+	background-color: var(--dark-bg);
+	color: var(--text-primary);
+	font-family: var(--font-body);
+	font-size: 1.05rem;
+	line-height: 1.7;
+	min-height: 100vh;
+	overflow-x: hidden;
+}
+
+/* Grid overlay */
+body::before {
+	content: '';
+	position: fixed;
+	inset: 0;
+	background-image:
+		linear-gradient(rgba(0, 255, 255, 0.03) 1px, transparent 1px),
+		linear-gradient(90deg, rgba(0, 255, 255, 0.03) 1px, transparent 1px);
+	background-size: 50px 50px;
+	pointer-events: none;
+	z-index: 0;
+}
+
+/* Headings */
+h1, h2, h3, h4, h5, h6 {
+	font-family: var(--font-heading);
+	color: var(--text-primary);
+	margin: 0 0 1rem 0;
+}
+
+h1 { font-weight: 900; }
+h2 { font-weight: 700; }
+h3 { font-weight: 700; }
+h4 { font-weight: 400; }
+
+/* Links */
+a {
+	color: var(--neon-cyan);
+	text-decoration: none;
+	transition: color var(--transition-speed) ease;
+}
+
+a:hover {
+	color: var(--text-primary);
+}
+
+/* Scrollbar */
+::-webkit-scrollbar {
+	width: 8px;
+}
+
+::-webkit-scrollbar-track {
+	background: var(--dark-bg);
+}
+
+::-webkit-scrollbar-thumb {
+	background: rgba(0, 255, 255, 0.2);
+	border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+	background: rgba(0, 255, 255, 0.4);
+}
+
+/* Selection */
+::selection {
+	background: rgba(0, 255, 255, 0.2);
+	color: var(--text-primary);
+}
+
+/* Reset box-sizing */
+*, *::before, *::after {
+	box-sizing: border-box;
+}
