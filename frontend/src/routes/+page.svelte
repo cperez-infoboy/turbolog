@@ -6,14 +6,14 @@
 		fetchTasks,
 		selectTask
 	} from '$lib/stores/tasks.svelte';
+	import type { StatusReportWithSummary } from '$lib/api/status';
 	import { getReportsByDate } from '$lib/api/status';
 	import TaskList from '$lib/components/TaskList.svelte';
-	import StatusPanel from '$lib/components/StatusPanel.svelte';
 
 	const auth = getAuthState();
 	const tasks = getTasksState();
 
-	let reportsByTask = $state<Map<string, { id: string }>>(new Map());
+	let reportsByTask = $state<Map<string, StatusReportWithSummary>>(new Map());
 	let date = $state(todayString());
 
 	function todayString(): string {
@@ -28,9 +28,7 @@
 	async function loadReports() {
 		try {
 			const reports = await getReportsByDate(date);
-			reportsByTask = new Map(
-				reports.map((r) => [r.task_key, { id: r.id }])
-			);
+			reportsByTask = new Map(reports.map((r) => [r.task_key, r]));
 		} catch {
 			reportsByTask = new Map();
 		}
@@ -46,64 +44,70 @@
 </script>
 
 <svelte:head>
-	<title>Turbolog — Dashboard</title>
+	<title>Turbolog — Panel</title>
 </svelte:head>
 
 <div class="dashboard">
-	<section class="tasks-column">
-		<h2 class="column-title">Tasks</h2>
-		<TaskList
-			tasks={tasks.tasks}
-			selectedTaskId={tasks.selectedTaskId}
-			{reportsByTask}
-			loading={tasks.loading}
-			onSelectTask={handleSelectTask}
-		/>
-	</section>
+	<div class="date-bar">
+		<label for="report-date">Fecha</label>
+		<input id="report-date" type="date" bind:value={date} onchange={loadReports} />
+	</div>
 
-	<section class="status-column">
-		<StatusPanel
-			selectedTask={tasks.selectedTask}
-			{date}
-			onReportSaved={handleReportSaved}
-		/>
-	</section>
+	<TaskList
+		tasks={tasks.tasks}
+		selectedTaskId={tasks.selectedTaskId}
+		{reportsByTask}
+		{date}
+		loading={tasks.loading}
+		onSelectTask={handleSelectTask}
+		onReportSaved={handleReportSaved}
+	/>
 </div>
 
 <style>
 	.dashboard {
-		display: grid;
-		grid-template-columns: 2fr 3fr;
+		display: flex;
+		flex-direction: column;
 		gap: 1.5rem;
 		padding: 6rem 5% 2rem;
-		max-width: 1400px;
+		max-width: 800px;
 		margin: 0 auto;
 		min-height: 100vh;
 	}
 
-	.column-title {
+	.date-bar {
+		display: flex;
+		align-items: center;
+		gap: 1rem;
+	}
+
+	.date-bar label {
 		font-family: var(--font-heading);
 		font-size: 0.85rem;
 		font-weight: 700;
 		color: var(--text-secondary);
 		text-transform: uppercase;
 		letter-spacing: 0.1em;
-		margin-bottom: 1rem;
 	}
 
-	.tasks-column {
-		display: flex;
-		flex-direction: column;
+	.date-bar input {
+		background: rgba(0, 0, 0, 0.4);
+		border: 1px solid var(--glass-border);
+		border-radius: 8px;
+		padding: 0.6rem 1rem;
+		color: var(--text-primary);
+		font-family: var(--font-body);
+		font-size: 1rem;
+		outline: none;
+		transition: border-color var(--transition-speed) ease;
 	}
 
-	.status-column {
-		display: flex;
-		flex-direction: column;
+	.date-bar input:focus {
+		border-color: var(--neon-cyan);
 	}
 
 	@media (max-width: 900px) {
 		.dashboard {
-			grid-template-columns: 1fr;
 			padding-top: 5rem;
 		}
 	}

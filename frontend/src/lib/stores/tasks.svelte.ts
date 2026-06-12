@@ -35,7 +35,7 @@ export async function fetchTasks(refresh: boolean = false): Promise<void> {
 		if (e instanceof Error) {
 			error = e.message;
 		} else {
-			error = 'Failed to fetch tasks';
+			error = 'Error al obtener las tareas';
 		}
 	} finally {
 		loading = false;

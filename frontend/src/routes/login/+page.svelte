@@ -3,14 +3,14 @@
 </script>
 
 <svelte:head>
-	<title>Turbolog — Login</title>
+	<title>Turbolog — Iniciar sesión</title>
 </svelte:head>
 
 <div class="login-container">
 	<div class="login-card">
 		<h1 class="login-title">Turbolog</h1>
-		<p class="login-subtitle">Track your JIRA tasks and daily status reports</p>
-		<a href={getGoogleLoginUrl()} class="login-button">Sign in with Google</a>
+		<p class="login-subtitle">Seguimiento de tareas JIRA y reportes de estado diarios</p>
+		<a href={getGoogleLoginUrl()} class="login-button">Iniciar sesión con Google</a>
 	</div>
 </div>
 

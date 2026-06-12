@@ -1,22 +1,27 @@
 <script lang="ts">
 	import type { Task } from '$lib/api/tasks';
+	import type { StatusReportWithSummary } from '$lib/api/status';
 	import TaskCard from './TaskCard.svelte';
 	import LoadingSpinner from './LoadingSpinner.svelte';
 
 	interface Props {
 		tasks: Task[];
 		selectedTaskId: string | null;
-		reportsByTask: Map<string, { id: string }>;
+		reportsByTask: Map<string, StatusReportWithSummary>;
+		date: string;
 		loading?: boolean;
 		onSelectTask: (task: Task) => void;
+		onReportSaved?: () => void;
 	}
 
 	let {
 		tasks,
 		selectedTaskId,
 		reportsByTask,
+		date,
 		loading = false,
-		onSelectTask
+		onSelectTask,
+		onReportSaved
 	}: Props = $props();
 </script>
 
@@ -25,8 +30,8 @@
 		<LoadingSpinner />
 	{:else if tasks.length === 0}
 		<div class="empty-state">
-			<p>No tasks assigned to you.</p>
-			<p class="hint">If you expect tasks, contact your admin.</p>
+			<p>No tienes tareas asignadas.</p>
+			<p class="hint">Si esperas tareas, contacta a tu administrador.</p>
 		</div>
 	{:else}
 		<div class="cards">
@@ -34,8 +39,10 @@
 				<TaskCard
 					{task}
 					selected={task.jira_key === selectedTaskId}
-					hasReport={reportsByTask.has(task.jira_key)}
+					report={reportsByTask.get(task.jira_key)}
+					{date}
 					onclick={onSelectTask}
+					{onReportSaved}
 				/>
 			{/each}
 		</div>

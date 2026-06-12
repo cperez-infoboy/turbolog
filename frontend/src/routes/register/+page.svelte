@@ -17,13 +17,13 @@
 	onMount(() => {
 		const state = page.url.searchParams.get('state');
 		if (!state) {
-			error = 'Missing registration data. Please try signing in again.';
+			error = 'Faltan datos de registro. Intenta iniciar sesión de nuevo.';
 			return;
 		}
 		try {
 			googleData = JSON.parse(atob(state));
 		} catch {
-			error = 'Invalid registration data. Please try signing in again.';
+			error = 'Datos de registro inválidos. Intenta iniciar sesión de nuevo.';
 		}
 	});
 
@@ -37,9 +37,9 @@
 			window.location.href = '/';
 		} catch (e: unknown) {
 			if (e instanceof Error) {
-				error = e.message || 'Registration failed';
+				error = e.message || 'Error al registrar cuenta';
 			} else {
-				error = 'Registration failed';
+				error = 'Error al registrar cuenta';
 			}
 		} finally {
 			loading = false;
@@ -48,7 +48,7 @@
 </script>
 
 <svelte:head>
-	<title>Turbolog — Register</title>
+	<title>Turbolog — Registro</title>
 </svelte:head>
 
 <div class="register-container">
@@ -56,18 +56,18 @@
 		{#if googleData}
 			<div class="profile-info">
 				{#if googleData.picture}
-					<img src={googleData.picture} alt="Profile" class="profile-picture" />
+					<img src={googleData.picture} alt="Perfil" class="profile-picture" />
 				{/if}
-				<h1 class="welcome">Welcome, {googleData.name}!</h1>
+				<h1 class="welcome">Bienvenido, {googleData.name}!</h1>
 				<p class="email">{googleData.email}</p>
 			</div>
 
 			<p class="confirmation-text">
-				Click below to create your Turbolog account using your Google profile.
+				Haz clic abajo para crear tu cuenta de Turbolog usando tu perfil de Google.
 			</p>
 
 			<button onclick={handleRegister} disabled={loading} class="register-button">
-				{loading ? 'Creating account...' : 'Create Account'}
+				{loading ? 'Creando cuenta...' : 'Crear cuenta'}
 			</button>
 
 			{#if error}
@@ -75,9 +75,9 @@
 			{/if}
 		{:else if error}
 			<p class="error">{error}</p>
-			<a href="/login" class="back-link">Back to login</a>
+			<a href="/login" class="back-link">Volver al inicio de sesión</a>
 		{:else}
-			<p>Loading...</p>
+			<p>Cargando...</p>
 		{/if}
 	</div>
 </div>

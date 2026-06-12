@@ -21,13 +21,13 @@
 		<a href="/" class="logo">TURBOLOG</a>
 
 		<div class="nav-links">
-			<a href="/" class="nav-link">Dashboard</a>
+			<a href="/" class="nav-link">Panel</a>
 		</div>
 
 		<div class="user-menu">
 			{#if user}
 				<span class="user-name">{user.name}</span>
-				<Button variant="secondary" onclick={onlogout}>Logout</Button>
+				<Button variant="secondary" onclick={onlogout}>Cerrar sesión</Button>
 			{/if}
 		</div>
 	</nav>

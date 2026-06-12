@@ -1,57 +1,168 @@
 <script lang="ts">
 	import type { Task } from '$lib/api/tasks';
+	import type { StatusReportWithSummary } from '$lib/api/status';
+	import { createReport, updateReport } from '$lib/api/status';
+	import Button from './Button.svelte';
 
 	interface Props {
 		task: Task;
 		selected?: boolean;
-		hasReport?: boolean;
+		report?: StatusReportWithSummary | null;
+		date?: string;
 		onclick?: (task: Task) => void;
+		onReportSaved?: () => void;
 	}
 
-	let { task, selected = false, hasReport = false, onclick }: Props = $props();
+	let {
+		task,
+		selected = false,
+		report = null,
+		date = '',
+		onclick,
+		onReportSaved
+	}: Props = $props();
+
+	let content = $state('');
+	let saving = $state(false);
+	let saveState = $state<'saved' | 'saving' | 'unsaved'>('unsaved');
+	let textareaEl: HTMLTextAreaElement | undefined = $state();
+	let cardEl: HTMLDivElement | undefined = $state();
+
+	// Sync content when report changes (runs on mount + whenever report changes)
+	$effect(() => {
+		content = report?.content ?? '';
+		saveState = report ? 'saved' : 'unsaved';
+	});
+
+	// Scroll into view when selected
+	$effect(() => {
+		if (selected && cardEl) {
+			// Delay to let the expand animation start
+			setTimeout(() => {
+				cardEl?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+			}, 150);
+		}
+	});
+
+	function autoExpand() {
+		if (!textareaEl) return;
+		textareaEl.style.height = 'auto';
+		textareaEl.style.height = textareaEl.scrollHeight + 'px';
+	}
+
+	async function handleSave() {
+		if (!content.trim()) return;
+		saving = true;
+		saveState = 'saving';
+
+		try {
+			if (report) {
+				await updateReport(report.id, content);
+			} else {
+				await createReport(task.jira_key, date, content);
+			}
+			saveState = 'saved';
+			onReportSaved?.();
+		} catch {
+			saveState = 'unsaved';
+		} finally {
+			saving = false;
+		}
+	}
+
+	function handleInput() {
+		saveState = 'unsaved';
+		autoExpand();
+	}
+
+	function handleHeaderClick() {
+		onclick?.(task);
+	}
+
+	// Auto-expand textarea when card becomes selected
+	$effect(() => {
+		if (selected) {
+			setTimeout(autoExpand, 200);
+		}
+	});
 </script>
 
-<button
-	class="task-card {selected ? 'selected' : ''} {hasReport ? 'has-report' : ''}"
-	onclick={() => onclick?.(task)}
+<div
+	class="task-card {selected ? 'selected' : ''} {report ? 'has-report' : ''}"
+	bind:this={cardEl}
 >
-	<div class="task-header">
-		<span class="task-key">{task.jira_key}</span>
-		{#if task.priority}
-			<span class="priority-dot" title={task.priority}></span>
-		{/if}
+	<button class="card-header" onclick={handleHeaderClick}>
+		<div class="task-row">
+			<span class="task-key">{task.jira_key}</span>
+			{#if task.priority}
+				<span class="priority-dot" title={task.priority}></span>
+			{/if}
+		</div>
+		<p class="task-summary">{task.summary}</p>
+		<div class="task-footer">
+			<span class="status-badge">{task.status}</span>
+			{#if report}
+				<span class="report-badge">Reportado</span>
+			{/if}
+			<span class="expand-icon" class:open={selected}>
+			</span>
+		</div>
+	</button>
+
+	<div class="accordion-body" class:expanded={selected}>
+		<div class="accordion-inner">
+			<div class="textarea-wrapper" class:focus={saveState === 'unsaved'}>
+				<textarea
+					bind:this={textareaEl}
+					bind:value={content}
+					oninput={handleInput}
+					placeholder="Escribe tu actualización de estado..."
+					rows="4"
+				></textarea>
+			</div>
+
+			<div class="editor-footer">
+				<span
+					class="save-indicator"
+					class:unsaved={saveState === 'unsaved'}
+					class:saving={saveState === 'saving'}
+					class:saved={saveState === 'saved'}
+				>
+					{saveState === 'saved'
+						? 'Guardado'
+						: saveState === 'saving'
+							? 'Guardando...'
+							: 'Sin guardar'}
+				</span>
+				<Button
+					variant="cta"
+					onclick={handleSave}
+					disabled={!content.trim() || saving}
+					loading={saving}
+				>
+					Guardar
+				</Button>
+			</div>
+		</div>
 	</div>
-	<p class="task-summary">{task.summary}</p>
-	<div class="task-footer">
-		<span class="status-badge">{task.status}</span>
-		{#if hasReport}
-			<span class="report-badge">Reported</span>
-		{/if}
-	</div>
-</button>
+</div>
 
 <style>
 	.task-card {
 		display: flex;
 		flex-direction: column;
-		gap: 0.5rem;
 		background: var(--glass-bg);
 		backdrop-filter: blur(10px);
 		-webkit-backdrop-filter: blur(10px);
 		border: 1px solid var(--glass-border);
 		border-radius: var(--border-radius);
-		padding: 1.25rem;
-		cursor: pointer;
-		text-align: left;
-		width: 100%;
+		overflow: hidden;
 		transition:
-			transform var(--transition-speed) ease,
 			border-color var(--transition-speed) ease,
 			box-shadow var(--transition-speed) ease;
 	}
 
-	.task-card:hover {
-		transform: translateY(-5px);
+	.task-card:not(.selected):hover {
 		border-color: var(--glass-border-hover);
 		box-shadow: 0 0 15px rgba(0, 255, 255, 0.15);
 	}
@@ -63,11 +174,21 @@
 			inset 0 0 20px rgba(0, 255, 255, 0.05);
 	}
 
-	.selected:hover {
-		border-color: rgba(0, 255, 255, 0.7);
+	.card-header {
+		display: flex;
+		flex-direction: column;
+		gap: 0.5rem;
+		background: none;
+		border: none;
+		cursor: pointer;
+		text-align: left;
+		width: 100%;
+		padding: 1.25rem;
+		color: inherit;
+		font: inherit;
 	}
 
-	.task-header {
+	.task-row {
 		display: flex;
 		align-items: center;
 		justify-content: space-between;
@@ -128,5 +249,100 @@
 		padding: 0.15rem 0.5rem;
 		border-radius: 4px;
 		border: 1px solid rgba(0, 255, 136, 0.2);
+	}
+
+	.expand-icon {
+		margin-left: auto;
+		width: 0;
+		height: 0;
+		border-left: 5px solid transparent;
+		border-right: 5px solid transparent;
+		border-top: 5px solid var(--text-secondary);
+		transition: transform var(--transition-speed) ease;
+	}
+
+	.expand-icon.open {
+		transform: rotate(180deg);
+	}
+
+	/* Accordion animation using grid-template-rows */
+	.accordion-body {
+		display: grid;
+		grid-template-rows: 0fr;
+		transition: grid-template-rows 0.3s ease;
+	}
+
+	.accordion-body.expanded {
+		grid-template-rows: 1fr;
+	}
+
+	.accordion-inner {
+		overflow: hidden;
+		display: flex;
+		flex-direction: column;
+		gap: 0.75rem;
+		padding: 0 1.25rem;
+	}
+
+	.accordion-body.expanded .accordion-inner {
+		padding-bottom: 1.25rem;
+	}
+
+	.textarea-wrapper {
+		border: 1px solid var(--glass-border);
+		border-radius: 8px;
+		overflow: hidden;
+		transition:
+			border-color var(--transition-speed) ease,
+			box-shadow var(--transition-speed) ease;
+	}
+
+	.textarea-wrapper.focus {
+		border-color: var(--neon-cyan);
+		box-shadow: 0 0 12px rgba(0, 255, 255, 0.15);
+	}
+
+	textarea {
+		width: 100%;
+		min-height: 120px;
+		padding: 1rem;
+		background: rgba(0, 0, 0, 0.4);
+		color: var(--text-primary);
+		font-family: var(--font-body);
+		font-size: 1rem;
+		line-height: 1.6;
+		border: none;
+		outline: none;
+		resize: none;
+	}
+
+	textarea::placeholder {
+		color: rgba(255, 255, 255, 0.25);
+	}
+
+	.editor-footer {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+	}
+
+	.save-indicator {
+		font-family: var(--font-body);
+		font-size: 0.8rem;
+		font-weight: 600;
+		text-transform: uppercase;
+		letter-spacing: 0.05em;
+	}
+
+	.save-indicator.saved {
+		color: var(--neon-green);
+	}
+
+	.save-indicator.saving {
+		color: var(--neon-cyan);
+	}
+
+	.save-indicator.unsaved {
+		color: var(--text-secondary);
 	}
 </style>

@@ -1,26 +1,25 @@
 services:
+  # ── Backend: FastAPI + SPA estático + SQLite ─────────────────────────
   backend:
     build:
-      context: ./backend
+      context: .
+      dockerfile: backend/Dockerfile
     ports:
       - "8081:8000"
     environment:
       - SERVE_STATIC=true
       - STATIC_DIR=/app/static
+      - DATABASE_URL=sqlite+aiosqlite:///./data/turbolog.db
     volumes:
       - ./backend/.env:/app/.env:ro
-      - frontend-build:/app/static:ro
-    depends_on:
-      frontend:
-        condition: service_completed_successfully
+      - backend-data:/app/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     restart: unless-stopped
 
-  frontend:
-    build:
-      context: ./frontend
-    volumes:
-      - frontend-build:/app/build
-    # Build-only service — exits after producing the build output
-
 volumes:
-  frontend-build:
+  backend-data:

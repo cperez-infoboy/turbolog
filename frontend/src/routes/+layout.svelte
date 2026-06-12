@@ -31,7 +31,7 @@
 
 {#if !auth.authLoaded}
 	<div class="loading-screen">
-		<p>Loading...</p>
+		<p>Cargando...</p>
 	</div>
 {:else}
 	{#if auth.isAuthenticated}

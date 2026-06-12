@@ -1,4 +1,5 @@
 import base64
+import re
 from datetime import datetime, timezone
 
 import httpx
@@ -13,7 +14,8 @@ class JiraClient:
         self.jira_domain = jira_domain
         self.email = email
         self.api_token = api_token
-        domain = jira_domain.replace(".atlassian.net", "")
+        clean = re.sub(r'^https?://', '', jira_domain).rstrip('/')
+        domain = clean.replace(".atlassian.net", "")
         self._base_url = f"https://{domain}.atlassian.net"
         self._auth_header = self._make_auth_header()
 
@@ -44,19 +46,38 @@ class JiraClient:
         response.raise_for_status()
         return response.json()
 
+    async def _find_account_id(self, email: str) -> str:
+        """Look up a JIRA user's accountId by email."""
+        async with httpx.AsyncClient(timeout=settings.JIRA_REQUEST_TIMEOUT) as client:
+            response = await client.get(
+                f"{self._base_url}/rest/api/3/user/search",
+                params={"query": email},
+                headers=self._headers(),
+            )
+
+        if response.status_code != 200:
+            raise JiraError(f"JIRA user lookup failed for {email}: {response.status_code} {response.text}")
+
+        users = response.json()
+        if not users:
+            raise JiraError(f"No JIRA user found for email: {email}")
+
+        return users[0]["accountId"]
+
     async def get_assigned_tasks(self, assignee_email: str | None = None) -> list[dict]:
         """Fetch tasks assigned to a specific user (or currentUser if None), ordered by most recently updated."""
         if assignee_email:
-            jql = f"assignee={assignee_email}+ORDER+BY+updated+DESC"
+            account_id = await self._find_account_id(assignee_email)
+            jql = f"assignee={account_id} ORDER BY updated DESC"
         else:
-            jql = "assignee=currentUser()+ORDER+BY+updated+DESC"
-        fields = "summary,status,priority,project,updated"
+            jql = "assignee=currentUser() ORDER BY updated DESC"
+        fields = ["summary", "status", "priority", "project", "updated"]
 
         async with httpx.AsyncClient(timeout=settings.JIRA_REQUEST_TIMEOUT) as client:
-            response = await client.get(
-                f"{self._base_url}/rest/api/3/search",
-                params={"jql": jql, "fields": fields},
-                headers=self._headers(),
+            response = await client.post(
+                f"{self._base_url}/rest/api/3/search/jql",
+                json={"jql": jql, "fields": fields},
+                headers={**self._headers(), "Content-Type": "application/json"},
             )
 
         if response.status_code == 401:
@@ -64,7 +85,7 @@ class JiraClient:
         if response.status_code == 429:
             raise JiraRateLimitError("JIRA rate limit exceeded")
         if response.status_code != 200:
-            raise JiraError(f"JIRA API error: {response.status_code}")
+            raise JiraError(f"JIRA search error: {response.status_code} {response.text}")
 
         data = response.json()
         return self._normalize_tasks(data.get("issues", []))

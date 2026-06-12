@@ -1,0 +1,7 @@
+frontend/node_modules/
+frontend/.svelte-kit/
+frontend/build/
+backend/.venv/
+backend/__pycache__/
+.git/
+.claude/
