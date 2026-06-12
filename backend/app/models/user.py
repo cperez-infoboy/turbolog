@@ -23,9 +23,6 @@ class User(Base):
         String, default=lambda: datetime.now(timezone.utc).isoformat()
     )
 
-    jira_connection = relationship(
-        "JiraConnection", back_populates="user", uselist=False, lazy="selectin"
-    )
     status_reports = relationship(
         "StatusReport", back_populates="user", lazy="selectin"
     )

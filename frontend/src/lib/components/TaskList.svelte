@@ -25,8 +25,8 @@
 		<LoadingSpinner />
 	{:else if tasks.length === 0}
 		<div class="empty-state">
-			<p>No JIRA tasks found.</p>
-			<p class="hint">Check your JIRA connection in Settings.</p>
+			<p>No tasks assigned to you.</p>
+			<p class="hint">If you expect tasks, contact your admin.</p>
 		</div>
 	{:else}
 		<div class="cards">

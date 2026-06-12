@@ -44,9 +44,12 @@ class JiraClient:
         response.raise_for_status()
         return response.json()
 
-    async def get_assigned_tasks(self) -> list[dict]:
-        """Fetch tasks assigned to the current user, ordered by most recently updated."""
-        jql = "assignee=currentUser()+ORDER+BY+updated+DESC"
+    async def get_assigned_tasks(self, assignee_email: str | None = None) -> list[dict]:
+        """Fetch tasks assigned to a specific user (or currentUser if None), ordered by most recently updated."""
+        if assignee_email:
+            jql = f"assignee={assignee_email}+ORDER+BY+updated+DESC"
+        else:
+            jql = "assignee=currentUser()+ORDER+BY+updated+DESC"
         fields = "summary,status,priority,project,updated"
 
         async with httpx.AsyncClient(timeout=settings.JIRA_REQUEST_TIMEOUT) as client:

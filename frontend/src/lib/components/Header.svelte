@@ -22,7 +22,6 @@
 
 		<div class="nav-links">
 			<a href="/" class="nav-link">Dashboard</a>
-			<a href="/settings" class="nav-link">Settings</a>
 		</div>
 
 		<div class="user-menu">
