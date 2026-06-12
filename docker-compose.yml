@@ -1,0 +1,26 @@
+services:
+  backend:
+    build:
+      context: ./backend
+    ports:
+      - "8081:8000"
+    environment:
+      - SERVE_STATIC=true
+      - STATIC_DIR=/app/static
+    volumes:
+      - ./backend/.env:/app/.env:ro
+      - frontend-build:/app/static:ro
+    depends_on:
+      frontend:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+    volumes:
+      - frontend-build:/app/build
+    # Build-only service — exits after producing the build output
+
+volumes:
+  frontend-build:

@@ -37,7 +37,7 @@ async def health_check():
 # output and add a catch-all route for SPA client-side routing.
 
 SERVE_STATIC = os.getenv("SERVE_STATIC", "false").lower() == "true"
-STATIC_DIR = Path(__file__).resolve().parent.parent.parent / "frontend" / "build"
+STATIC_DIR = Path(os.getenv("STATIC_DIR", str(Path(__file__).resolve().parent.parent.parent / "frontend" / "build")))
 
 
 if SERVE_STATIC and STATIC_DIR.is_dir():
