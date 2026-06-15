@@ -89,6 +89,7 @@ async def get_jira_tasks(
             if existing:
                 existing.summary = task_data["summary"]
                 existing.status = task_data["status"]
+                existing.status_category = task_data.get("status_category")
                 existing.priority = task_data.get("priority")
                 existing.project_key = task_data.get("project_key")
                 existing.project_name = task_data.get("project_name")
@@ -100,6 +101,7 @@ async def get_jira_tasks(
                     jira_key=task_data["jira_key"],
                     summary=task_data["summary"],
                     status=task_data["status"],
+                    status_category=task_data.get("status_category"),
                     priority=task_data.get("priority"),
                     project_key=task_data.get("project_key"),
                     project_name=task_data.get("project_name"),
@@ -117,6 +119,7 @@ def _task_to_dict(task: Task) -> dict:
         "jira_key": task.jira_key,
         "summary": task.summary,
         "status": task.status,
+        "status_category": task.status_category,
         "priority": task.priority,
         "project_key": task.project_key,
         "project_name": task.project_name,

@@ -23,6 +23,7 @@ class Task(Base):
     jira_key: Mapped[str] = mapped_column(String, nullable=False)
     summary: Mapped[str] = mapped_column(String, nullable=False)
     status: Mapped[str] = mapped_column(String, nullable=False)
+    status_category: Mapped[str | None] = mapped_column(String, nullable=True)
     priority: Mapped[str | None] = mapped_column(String, nullable=True)
     project_key: Mapped[str | None] = mapped_column(String, nullable=True)
     project_name: Mapped[str | None] = mapped_column(String, nullable=True)

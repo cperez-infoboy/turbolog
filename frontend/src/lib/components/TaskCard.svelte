@@ -111,38 +111,42 @@
 
 	<div class="accordion-body" class:expanded={selected}>
 		<div class="accordion-inner">
-			<div class="textarea-wrapper" class:focus={saveState === 'unsaved'}>
-				<textarea
-					bind:this={textareaEl}
-					bind:value={content}
-					oninput={handleInput}
-					placeholder="Escribe tu actualización de estado..."
-					rows="4"
-				></textarea>
-			</div>
+			{#if task.status_category === 'indeterminate'}
+				<div class="textarea-wrapper" class:focus={saveState === 'unsaved'}>
+					<textarea
+						bind:this={textareaEl}
+						bind:value={content}
+						oninput={handleInput}
+						placeholder="Escribe tu actualización de estado..."
+						rows="4"
+					></textarea>
+				</div>
 
-			<div class="editor-footer">
-				<span
-					class="save-indicator"
-					class:unsaved={saveState === 'unsaved'}
-					class:saving={saveState === 'saving'}
-					class:saved={saveState === 'saved'}
-				>
-					{saveState === 'saved'
-						? 'Guardado'
-						: saveState === 'saving'
-							? 'Guardando...'
-							: 'Sin guardar'}
-				</span>
-				<Button
-					variant="cta"
-					onclick={handleSave}
-					disabled={!content.trim() || saving}
-					loading={saving}
-				>
-					Guardar
-				</Button>
-			</div>
+				<div class="editor-footer">
+					<span
+						class="save-indicator"
+						class:unsaved={saveState === 'unsaved'}
+						class:saving={saveState === 'saving'}
+						class:saved={saveState === 'saved'}
+					>
+						{saveState === 'saved'
+							? 'Guardado'
+							: saveState === 'saving'
+								? 'Guardando...'
+								: 'Sin guardar'}
+					</span>
+					<Button
+						variant="cta"
+						onclick={handleSave}
+						disabled={!content.trim() || saving}
+						loading={saving}
+					>
+						Guardar
+					</Button>
+				</div>
+			{:else}
+				<p class="pending-notice">Tarea pendiente — el editor de status estará disponible cuando la tarea esté en curso.</p>
+			{/if}
 		</div>
 	</div>
 </div>
@@ -345,4 +349,13 @@
 	.save-indicator.unsaved {
 		color: var(--text-secondary);
 	}
+
+		.pending-notice {
+			font-family: var(--font-body);
+			font-size: 0.85rem;
+			color: var(--text-secondary);
+			margin: 0;
+			padding: 0.5rem 0;
+			opacity: 0.7;
+		}
 </style>

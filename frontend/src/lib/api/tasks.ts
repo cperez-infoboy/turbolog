@@ -4,6 +4,7 @@ export interface Task {
 	jira_key: string;
 	summary: string;
 	status: string;
+	status_category: string | null;
 	priority: string | null;
 	project_key: string | null;
 	project_name: string | null;

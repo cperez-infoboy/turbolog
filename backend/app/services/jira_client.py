@@ -68,7 +68,7 @@ class JiraClient:
         """Fetch tasks assigned to a specific user (or currentUser if None), ordered by most recently updated."""
         if assignee_email:
             account_id = await self._find_account_id(assignee_email)
-            jql = f"assignee={account_id} ORDER BY updated DESC"
+            jql = f"assignee={account_id} AND statusCategory != Done ORDER BY updated DESC"
         else:
             jql = "assignee=currentUser() ORDER BY updated DESC"
         fields = ["summary", "status", "priority", "project", "updated"]
@@ -108,10 +108,12 @@ class JiraClient:
             priority_field = fields.get("priority", {})
             project_field = fields.get("project", {})
 
+            status_category = status_field.get("statusCategory", {}).get("key")
             tasks.append({
                 "jira_key": issue.get("key", ""),
                 "summary": fields.get("summary", ""),
                 "status": status_field.get("name", ""),
+                "status_category": status_category,
                 "priority": priority_field.get("name") if priority_field else None,
                 "project_key": project_field.get("key") if project_field else None,
                 "project_name": project_field.get("name") if project_field else None,
