@@ -79,6 +79,27 @@
 		onclick?.(task);
 	}
 
+	// Format an ISO / YYYY-MM-DD date for display in the es locale. '' on falsy/invalid.
+	function formatDate(iso: string | null | undefined): string {
+		if (!iso) return '';
+		const d = new Date(iso);
+		if (Number.isNaN(d.getTime())) return '';
+		return new Intl.DateTimeFormat('es', {
+			day: 'numeric',
+			month: 'short',
+			year: 'numeric'
+		}).format(d);
+	}
+
+	// A duedate is overdue when it exists and is strictly before today (day granularity).
+	const today = new Date();
+	today.setHours(0, 0, 0, 0);
+	let isOverdue = $derived(
+		!!task.duedate && new Date(task.duedate).getTime() < today.getTime()
+	);
+	let createdLabel = $derived(formatDate(task.created));
+	let duedateLabel = $derived(formatDate(task.duedate));
+
 	// Auto-expand textarea when card becomes selected
 	$effect(() => {
 		if (selected) {
@@ -99,6 +120,19 @@
 			{/if}
 		</div>
 		<p class="task-summary">{task.summary}</p>
+		{#if createdLabel || task.duedate !== undefined}
+			<div class="task-meta">
+				{#if createdLabel}
+					<span class="meta-item">Creada: <span class="meta-value">{createdLabel}</span></span>
+				{/if}
+				<span class="meta-item" class:overdue={isOverdue}>
+					Vence:
+					<span class="meta-value">
+						{duedateLabel || 'Sin vencimiento'}
+					</span>
+				</span>
+			</div>
+		{/if}
 		<div class="task-footer">
 			<span class="status-badge">{task.status}</span>
 			{#if report}
@@ -111,6 +145,11 @@
 
 	<div class="accordion-body" class:expanded={selected}>
 		<div class="accordion-inner">
+			{#if task.description}
+				<div class="description-block">
+					{@html task.description}
+				</div>
+			{/if}
 			{#if task.status_category === 'indeterminate'}
 				<div class="textarea-wrapper" class:focus={saveState === 'unsaved'}>
 					<textarea
@@ -231,6 +270,62 @@
 		align-items: center;
 		gap: 0.5rem;
 		margin-top: 0.25rem;
+	}
+
+	.task-meta {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.75rem;
+		font-family: var(--font-body);
+		font-size: 0.75rem;
+		color: var(--text-secondary);
+		margin-top: 0.1rem;
+	}
+
+	.meta-item {
+		display: inline-flex;
+		align-items: baseline;
+		gap: 0.25rem;
+	}
+
+	.meta-item .meta-value {
+		color: var(--text-primary);
+	}
+
+	.meta-item.overdue {
+		color: var(--neon-pink);
+	}
+
+	.meta-item.overdue .meta-value {
+		color: var(--neon-pink);
+	}
+
+	.description-block {
+		font-family: var(--font-body);
+		font-size: 0.85rem;
+		color: var(--text-secondary);
+		line-height: 1.5;
+		padding: 0.75rem;
+		background: rgba(0, 0, 0, 0.3);
+		border: 1px solid var(--glass-border);
+		border-radius: 8px;
+		display: -webkit-box;
+		-webkit-line-clamp: 3;
+		line-clamp: 3;
+		-webkit-box-orient: vertical;
+		overflow: hidden;
+	}
+
+	.description-block :global(p) {
+		margin: 0 0 0.5rem;
+	}
+
+	.description-block :global(p:last-child) {
+		margin-bottom: 0;
+	}
+
+	.description-block :global(a) {
+		color: var(--neon-cyan);
 	}
 
 	.status-badge {

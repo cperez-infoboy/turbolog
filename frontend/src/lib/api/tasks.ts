@@ -10,6 +10,8 @@ export interface Task {
 	project_name: string | null;
 	updated: string;
 	created?: string;
+	duedate?: string | null;
+	description?: string | null;
 }
 
 export async function fetchTasks(refresh: boolean = false): Promise<Task[]> {
