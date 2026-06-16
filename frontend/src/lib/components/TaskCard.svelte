@@ -80,9 +80,12 @@
 	}
 
 	// Format an ISO / YYYY-MM-DD date for display in the es locale. '' on falsy/invalid.
+	// JIRA `duedate` is date-only (YYYY-MM-DD); Date parses those as UTC, which drifts
+	// one day backward in negative-offset timezones (e.g. UTC-3 shows the 14th for the 15th).
+	// Date-only strings (no 'T') are forced to local midnight to avoid the off-by-one.
 	function formatDate(iso: string | null | undefined): string {
 		if (!iso) return '';
-		const d = new Date(iso);
+		const d = iso.includes('T') ? new Date(iso) : new Date(`${iso}T00:00:00`);
 		if (Number.isNaN(d.getTime())) return '';
 		return new Intl.DateTimeFormat('es', {
 			day: 'numeric',
