@@ -71,7 +71,7 @@ class JiraClient:
             jql = f"assignee={account_id} AND statusCategory != Done ORDER BY updated DESC"
         else:
             jql = "assignee=currentUser() ORDER BY updated DESC"
-        fields = ["summary", "status", "priority", "project", "updated"]
+        fields = ["summary", "status", "priority", "project", "updated", "created"]
 
         async with httpx.AsyncClient(timeout=settings.JIRA_REQUEST_TIMEOUT) as client:
             response = await client.post(
@@ -118,6 +118,7 @@ class JiraClient:
                 "project_key": project_field.get("key") if project_field else None,
                 "project_name": project_field.get("name") if project_field else None,
                 "updated": fields.get("updated", ""),
+                "created": fields.get("created", ""),
             })
         return tasks
 
