@@ -9,6 +9,7 @@ export interface Task {
 	project_key: string | null;
 	project_name: string | null;
 	updated: string;
+	created?: string;
 }
 
 export async function fetchTasks(refresh: boolean = false): Promise<Task[]> {

@@ -1,8 +1,12 @@
 <script lang="ts">
 	import type { Task } from '$lib/api/tasks';
 	import type { StatusReportWithSummary } from '$lib/api/status';
+	import { getTasksState, toggleSortDirection } from '$lib/stores/tasks.svelte';
+	import type { SortDirection } from '$lib/stores/tasks.svelte';
 	import TaskCard from './TaskCard.svelte';
 	import LoadingSpinner from './LoadingSpinner.svelte';
+
+	type TaskGroup = { key: string; label: string; tasks: Task[] };
 
 	interface Props {
 		tasks: Task[];
@@ -23,6 +27,42 @@
 		onSelectTask,
 		onReportSaved
 	}: Props = $props();
+
+	const { sortDirection } = getTasksState();
+
+	// Null-sorts-last comparator. The null check runs BEFORE the direction flip
+	// so un-backfilled tasks never appear first in either direction (REQ-SYNC-05).
+	function compareByCreated(a: Task, b: Task, dir: SortDirection): number {
+		const aNull = !a.created;
+		const bNull = !b.created;
+		if (aNull && bNull) return 0;
+		if (aNull) return 1;
+		if (bNull) return -1;
+		const diff = new Date(b.created!).getTime() - new Date(a.created!).getTime();
+		return dir === 'newest-first' ? diff : -diff;
+	}
+
+	// Grouping is a pure presentation concern, recomputed per render (never persisted).
+	// Section cross-project ordering = insertion order (= JQL fetch order).
+	const groups = $derived.by<TaskGroup[]>(() => {
+		const dir = sortDirection;
+		const map = new Map<string, Task[]>();
+		for (const t of tasks) {
+			const key = (t.project_key ?? '').trim() || 'UNASSIGNED';
+			if (!map.has(key)) map.set(key, []);
+			map.get(key)!.push(t);
+		}
+		const out: TaskGroup[] = [];
+		for (const [key, items] of map) {
+			items.sort((a, b) => compareByCreated(a, b, dir));
+			const label = key === 'UNASSIGNED' ? 'UNASSIGNED' : (items[0]?.project_name ?? key);
+			out.push({ key, label, tasks: items });
+		}
+		return out;
+	});
+
+	// Toggle button describes the ACTION the next click will perform.
+	const toggleLabel = $derived(sortDirection === 'newest-first' ? 'Antiguo primero' : 'Reciente primero');
 </script>
 
 <div class="task-list">
@@ -34,16 +74,31 @@
 			<p class="hint">Si esperas tareas, contacta a tu administrador.</p>
 		</div>
 	{:else}
-		<div class="cards">
-			{#each tasks as task (task.jira_key)}
-				<TaskCard
-					{task}
-					selected={task.jira_key === selectedTaskId}
-					report={reportsByTask.get(task.jira_key)}
-					{date}
-					onclick={onSelectTask}
-					{onReportSaved}
-				/>
+		<div class="toolbar">
+			<button type="button" class="toggle" onclick={toggleSortDirection}>
+				{toggleLabel}
+			</button>
+		</div>
+		<div class="sections">
+			{#each groups as group (group.key)}
+				<section class="group">
+					<header class="group-header">
+						<span class="group-label">{group.label}</span>
+						<span class="group-count">{group.tasks.length}</span>
+					</header>
+					<div class="cards">
+						{#each group.tasks as task (task.jira_key)}
+							<TaskCard
+								{task}
+								selected={task.jira_key === selectedTaskId}
+								report={reportsByTask.get(task.jira_key)}
+								{date}
+								onclick={onSelectTask}
+								{onReportSaved}
+							/>
+						{/each}
+					</div>
+				</section>
 			{/each}
 		</div>
 	{/if}
@@ -54,6 +109,73 @@
 		display: flex;
 		flex-direction: column;
 		gap: var(--grid-gap);
+	}
+
+	.toolbar {
+		display: flex;
+		justify-content: flex-end;
+	}
+
+	.toggle {
+		font-family: var(--font-body);
+		font-size: 0.9rem;
+		font-weight: 600;
+		letter-spacing: 0.05em;
+		text-transform: uppercase;
+		color: var(--neon-cyan);
+		background: var(--glass-bg);
+		border: 1px solid var(--glass-border);
+		border-radius: var(--border-radius);
+		padding: 0.5rem 1rem;
+		cursor: pointer;
+		transition: border-color var(--transition-speed) ease, background var(--transition-speed) ease;
+	}
+
+	.toggle:hover {
+		background: var(--glass-bg-hover);
+		border-color: var(--glass-border-hover);
+	}
+
+	.toggle:focus-visible {
+		outline: 2px solid var(--neon-cyan);
+		outline-offset: 2px;
+	}
+
+	.sections {
+		display: flex;
+		flex-direction: column;
+		gap: var(--grid-gap);
+	}
+
+	.group {
+		display: flex;
+		flex-direction: column;
+		gap: 0.75rem;
+	}
+
+	.group-header {
+		display: flex;
+		align-items: baseline;
+		justify-content: space-between;
+		gap: 0.75rem;
+		padding: 0 0.25rem;
+		border-bottom: 1px solid var(--glass-border);
+		padding-bottom: 0.4rem;
+	}
+
+	.group-label {
+		font-family: var(--font-heading);
+		font-weight: 700;
+		font-size: 1.05rem;
+		color: var(--text-primary);
+		letter-spacing: 0.04em;
+	}
+
+	.group-count {
+		font-family: var(--font-body);
+		font-size: 0.85rem;
+		color: var(--text-secondary);
+		opacity: 0.8;
 	}
 
 	.cards {

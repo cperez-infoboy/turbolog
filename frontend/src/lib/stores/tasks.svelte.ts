@@ -1,10 +1,13 @@
 import { fetchTasks as apiFetchTasks } from '$lib/api/tasks';
 import type { Task } from '$lib/api/tasks';
 
+export type SortDirection = 'newest-first' | 'oldest-first';
+
 let tasks = $state<Task[]>([]);
 let selectedTaskId = $state<string | null>(null);
 let loading = $state(false);
 let error = $state<string | null>(null);
+let sortDirection = $state<SortDirection>('newest-first');
 
 export function getTasksState() {
 	return {
@@ -22,8 +25,15 @@ export function getTasksState() {
 		},
 		get selectedTask() {
 			return tasks.find((t) => t.jira_key === selectedTaskId) ?? null;
+		},
+		get sortDirection() {
+			return sortDirection;
 		}
 	};
+}
+
+export function toggleSortDirection(): void {
+	sortDirection = sortDirection === 'newest-first' ? 'oldest-first' : 'newest-first';
 }
 
 export async function fetchTasks(refresh: boolean = false): Promise<void> {
