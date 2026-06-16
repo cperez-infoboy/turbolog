@@ -1,20 +1,31 @@
-"""Tests for JiraClient normalization (REQ-SYNC-01).
+"""Tests for JiraClient normalization and ADF -> HTML parsing.
 
-Covers `_normalize_tasks()` requesting and emitting the `created` field.
+Covers:
+- `_normalize_tasks()` emitting `created`, `duedate`, and `description`.
+- `_adf_to_html()` converting Atlassian Document Format (ADF) to an
+  HTML-escaped string (REQ: JIRA /search/jql does NOT return renderedFields;
+  `fields.description` is ADF JSON and must be parsed backend-side).
 """
-from app.services.jira_client import JiraClient
+from app.services.jira_client import JiraClient, _adf_to_html
 
 
 def _sample_issue(
     key: str = "PROJ-1",
     created: str = "2024-01-15T10:00:00.000+0000",
     duedate: str | None = "2024-07-01",
-    description_html: str | None = "<p>Rendered description</p>",
+    description_adf: dict | None = {
+        "type": "doc",
+        "version": 1,
+        "content": [
+            {"type": "paragraph", "content": [{"type": "text", "text": "Test para Tutbolog"}]},
+        ],
+    },
 ) -> dict:
     """A minimal JIRA issue shape matching what /rest/api/3/search/jql returns.
 
-    `description_html` is placed under `renderedFields.description` (the HTML
-    projection); `fields.description` is left as ADF to assert we never read it.
+    `fields.description` carries the ADF dict (the only shape JIRA returns from
+    /search/jql — there are NO renderedFields). No `renderedFields` key is set
+    to assert the normalize path never relies on it.
     """
     return {
         "key": key,
@@ -26,10 +37,7 @@ def _sample_issue(
             "updated": "2024-06-01T12:00:00.000+0000",
             "created": created,
             "duedate": duedate,
-            "description": {"type": "doc", "version": 1, "content": []},
-        },
-        "renderedFields": {
-            "description": description_html,
+            "description": description_adf,
         },
     }
 
@@ -59,7 +67,11 @@ class TestNormalizeTasksEmitsCreated:
 
 
 class TestNormalizeTasksEmitsDuedateAndDescription:
-    """`duedate` comes from fields, `description` from renderedFields."""
+    """`duedate` and `description` both come from `fields`.
+
+    `description` is ADF in `fields.description` and is parsed to HTML by
+    `_adf_to_html`. There is no `renderedFields` source anymore.
+    """
 
     def test_normalize_duedate_passes_through_from_fields(self):
         issue = _sample_issue(duedate="2024-07-01")
@@ -68,12 +80,20 @@ class TestNormalizeTasksEmitsDuedateAndDescription:
 
         assert result[0]["duedate"] == "2024-07-01"
 
-    def test_normalize_description_comes_from_rendered_fields_not_fields(self):
-        issue = _sample_issue(description_html="<p>HTML body</p>")
+    def test_normalize_description_is_parsed_adf_html_from_fields(self):
+        issue = _sample_issue(
+            description_adf={
+                "type": "doc",
+                "version": 1,
+                "content": [
+                    {"type": "paragraph", "content": [{"type": "text", "text": "HTML body"}]},
+                ],
+            },
+        )
 
         result = JiraClient._normalize_tasks([issue])
 
-        # Must be the rendered HTML, NOT the ADF object sitting in fields.description.
+        # ADF paragraph+text is parsed to <p>...</p>; NOT the raw ADF dict.
         assert result[0]["description"] == "<p>HTML body</p>"
 
     def test_normalize_duedate_and_description_distinct_per_issue(self):
@@ -82,12 +102,24 @@ class TestNormalizeTasksEmitsDuedateAndDescription:
             _sample_issue(
                 key="PROJ-1",
                 duedate="2024-07-01",
-                description_html="<p>First</p>",
+                description_adf={
+                    "type": "doc",
+                    "version": 1,
+                    "content": [
+                        {"type": "paragraph", "content": [{"type": "text", "text": "First"}]},
+                    ],
+                },
             ),
             _sample_issue(
                 key="PROJ-2",
                 duedate="2025-01-15",
-                description_html="<p>Second</p>",
+                description_adf={
+                    "type": "doc",
+                    "version": 1,
+                    "content": [
+                        {"type": "paragraph", "content": [{"type": "text", "text": "Second"}]},
+                    ],
+                },
             ),
         ]
 
@@ -98,8 +130,8 @@ class TestNormalizeTasksEmitsDuedateAndDescription:
         assert result[1]["duedate"] == "2025-01-15"
         assert result[1]["description"] == "<p>Second</p>"
 
-    def test_normalize_duedate_and_description_default_to_none_when_absent(self):
-        # Edge case: JIRA omits both (no renderedFields, no duedate in fields).
+    def test_normalize_duedate_and_description_default_when_absent(self):
+        # Edge case: JIRA omits duedate and description entirely.
         issue = {
             "key": "PROJ-9",
             "fields": {
@@ -115,4 +147,221 @@ class TestNormalizeTasksEmitsDuedateAndDescription:
         result = JiraClient._normalize_tasks([issue])
 
         assert result[0]["duedate"] is None
-        assert result[0]["description"] is None
+        # No ADF -> parser returns "" (empty HTML string), not None.
+        assert result[0]["description"] == ""
+
+
+class TestAdfToHtml:
+    """Direct tests for the `_adf_to_html` ADF -> HTML parser.
+
+    The parser MUST HTML-escape all text (XSS neutralization) and degrade
+    gracefully on unknown / malformed input (never raise).
+    """
+
+    def test_paragraph_with_text(self):
+        adf = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {"type": "paragraph", "content": [{"type": "text", "text": "Hello world"}]},
+            ],
+        }
+
+        assert _adf_to_html(adf) == "<p>Hello world</p>"
+
+    def test_text_with_strong_mark(self):
+        adf = {
+            "type": "paragraph",
+            "content": [
+                {"type": "text", "text": "bold", "marks": [{"type": "strong"}]},
+            ],
+        }
+
+        assert _adf_to_html(adf) == "<p><strong>bold</strong></p>"
+
+    def test_text_with_em_mark(self):
+        adf = {
+            "type": "paragraph",
+            "content": [
+                {"type": "text", "text": "ital", "marks": [{"type": "em"}]},
+            ],
+        }
+
+        assert _adf_to_html(adf) == "<p><em>ital</em></p>"
+
+    def test_text_with_code_mark(self):
+        adf = {
+            "type": "paragraph",
+            "content": [
+                {"type": "text", "text": "x", "marks": [{"type": "code"}]},
+            ],
+        }
+
+        assert _adf_to_html(adf) == "<p><code>x</code></p>"
+
+    def test_text_with_link_mark_escapes_href(self):
+        adf = {
+            "type": "paragraph",
+            "content": [
+                {
+                    "type": "text",
+                    "text": "click",
+                    "marks": [{"type": "link", "attrs": {"href": "https://ex.com?a=1&b=2"}}],
+                },
+            ],
+        }
+
+        # Both the visible text and the href are HTML-escaped.
+        assert _adf_to_html(adf) == '<p><a href="https://ex.com?a=1&amp;b=2">click</a></p>'
+
+    def test_text_with_multiple_marks_nest_in_order(self):
+        adf = {
+            "type": "paragraph",
+            "content": [
+                {
+                    "type": "text",
+                    "text": "bi",
+                    "marks": [{"type": "strong"}, {"type": "em"}],
+                },
+            ],
+        }
+
+        # Marks nest in their declared order: outer = strong, inner = em.
+        assert _adf_to_html(adf) == "<p><strong><em>bi</em></strong></p>"
+
+    def test_heading_level_2(self):
+        adf = {
+            "type": "heading",
+            "attrs": {"level": 2},
+            "content": [{"type": "text", "text": "Title"}],
+        }
+
+        assert _adf_to_html(adf) == "<h2>Title</h2>"
+
+    def test_heading_level_clamped_when_out_of_range(self):
+        # Defensive: ADF spec says 1-6; an out-of-range level must clamp, not crash.
+        adf = {
+            "type": "heading",
+            "attrs": {"level": 9},
+            "content": [{"type": "text", "text": "Big"}],
+        }
+
+        assert _adf_to_html(adf) == "<h6>Big</h6>"
+
+    def test_bullet_list_with_two_items(self):
+        adf = {
+            "type": "bulletList",
+            "content": [
+                {"type": "listItem", "content": [
+                    {"type": "paragraph", "content": [{"type": "text", "text": "one"}]},
+                ]},
+                {"type": "listItem", "content": [
+                    {"type": "paragraph", "content": [{"type": "text", "text": "two"}]},
+                ]},
+            ],
+        }
+
+        # listItem children are paragraphs; their inline text is rendered
+        # directly inside <li> WITHOUT extra <p> nesting (cleaner HTML output).
+        assert _adf_to_html(adf) == "<ul><li>one</li><li>two</li></ul>"
+
+    def test_ordered_list(self):
+        adf = {
+            "type": "orderedList",
+            "content": [
+                {"type": "listItem", "content": [
+                    {"type": "paragraph", "content": [{"type": "text", "text": "first"}]},
+                ]},
+            ],
+        }
+
+        assert _adf_to_html(adf) == "<ol><li>first</li></ol>"
+
+    def test_code_block(self):
+        adf = {
+            "type": "codeBlock",
+            "content": [{"type": "text", "text": "print('hi')"}],
+        }
+
+        assert _adf_to_html(adf) == "<pre><code>print('hi')</code></pre>"
+
+    def test_hard_break(self):
+        adf = {
+            "type": "paragraph",
+            "content": [
+                {"type": "text", "text": "a"},
+                {"type": "hardBreak"},
+                {"type": "text", "text": "b"},
+            ],
+        }
+
+        assert _adf_to_html(adf) == "<p>a<br />b</p>"
+
+    def test_blockquote(self):
+        adf = {
+            "type": "blockquote",
+            "content": [
+                {"type": "paragraph", "content": [{"type": "text", "text": "quoted"}]},
+            ],
+        }
+
+        assert _adf_to_html(adf) == "<blockquote><p>quoted</p></blockquote>"
+
+    def test_rule(self):
+        assert _adf_to_html({"type": "rule"}) == "<hr />"
+
+    def test_mention_uses_attrs_text(self):
+        adf = {
+            "type": "paragraph",
+            "content": [
+                {"type": "mention", "attrs": {"text": "@alice"}},
+            ],
+        }
+
+        assert _adf_to_html(adf) == "<p>@alice</p>"
+
+    def test_html_injection_in_text_is_escaped(self):
+        # CRITICAL: a malicious / accidental script tag in ADF text must be
+        # HTML-escaped so it cannot execute when rendered via {@html}.
+        adf = {
+            "type": "paragraph",
+            "content": [{"type": "text", "text": "<script>x</script>"}],
+        }
+
+        assert _adf_to_html(adf) == "<p>&lt;script&gt;x&lt;/script&gt;</p>"
+
+    def test_html_injection_in_mention_text_is_escaped(self):
+        adf = {"type": "mention", "attrs": {"text": "<img src=x onerror=alert(1)>"}}
+
+        assert _adf_to_html(adf) == "&lt;img src=x onerror=alert(1)&gt;"
+
+    def test_none_input_returns_empty_string(self):
+        assert _adf_to_html(None) == ""
+
+    def test_non_dict_input_returns_empty_string(self):
+        assert _adf_to_html("not a dict") == ""
+        assert _adf_to_html([]) == ""
+        assert _adf_to_html(42) == ""
+
+    def test_unknown_node_with_content_recurses(self):
+        # Unknown node type but has content -> degrade by recursing into children.
+        adf = {
+            "type": "someFutureNode",
+            "content": [
+                {"type": "paragraph", "content": [{"type": "text", "text": "ok"}]},
+            ],
+        }
+
+        assert _adf_to_html(adf) == "<p>ok</p>"
+
+    def test_unknown_node_without_content_returns_empty(self):
+        assert _adf_to_html({"type": "mysteryNode"}) == ""
+
+    def test_empty_paragraph(self):
+        # paragraph with no content -> empty <p></p>.
+        assert _adf_to_html({"type": "paragraph"}) == "<p></p>"
+
+    def test_text_without_text_field(self):
+        # Defensive: a text node missing its `text` field must not raise.
+        adf = {"type": "paragraph", "content": [{"type": "text"}]}
+        assert _adf_to_html(adf) == "<p></p>"
