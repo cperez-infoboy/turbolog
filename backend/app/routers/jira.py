@@ -93,6 +93,7 @@ async def get_jira_tasks(
                 existing.priority = task_data.get("priority")
                 existing.project_key = task_data.get("project_key")
                 existing.project_name = task_data.get("project_name")
+                existing.created = task_data.get("created")
                 existing.fetched_at = fetched_at
             else:
                 task = Task(
@@ -105,6 +106,7 @@ async def get_jira_tasks(
                     priority=task_data.get("priority"),
                     project_key=task_data.get("project_key"),
                     project_name=task_data.get("project_name"),
+                    created=task_data.get("created"),
                     fetched_at=fetched_at,
                 )
                 session.add(task)
@@ -124,4 +126,5 @@ def _task_to_dict(task: Task) -> dict:
         "project_key": task.project_key,
         "project_name": task.project_name,
         "updated": task.fetched_at,
+        "created": task.created,
     }
