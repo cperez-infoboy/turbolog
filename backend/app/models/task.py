@@ -28,6 +28,8 @@ class Task(Base):
     project_key: Mapped[str | None] = mapped_column(String, nullable=True)
     project_name: Mapped[str | None] = mapped_column(String, nullable=True)
     created: Mapped[str | None] = mapped_column(String, nullable=True)
+    duedate: Mapped[str | None] = mapped_column(String, nullable=True)
+    description: Mapped[str | None] = mapped_column(String, nullable=True)
     fetched_at: Mapped[str] = mapped_column(
         String, default=lambda: datetime.now(timezone.utc).isoformat()
     )

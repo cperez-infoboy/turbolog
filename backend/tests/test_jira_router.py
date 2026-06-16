@@ -13,7 +13,12 @@ from app.models.task import Task
 from app.routers import jira as jira_router
 
 
-def _task_data(key: str = "PROJ-1", created: str = "2024-01-15T10:00:00.000+0000") -> dict:
+def _task_data(
+    key: str = "PROJ-1",
+    created: str = "2024-01-15T10:00:00.000+0000",
+    duedate: str | None = "2024-07-01",
+    description: str | None = "<p>Rendered description</p>",
+) -> dict:
     """Shape matching what JiraClient._normalize_tasks() returns."""
     return {
         "jira_key": key,
@@ -25,6 +30,8 @@ def _task_data(key: str = "PROJ-1", created: str = "2024-01-15T10:00:00.000+0000
         "project_name": "Project Alpha",
         "updated": "2024-06-01T12:00:00.000+0000",
         "created": created,
+        "duedate": duedate,
+        "description": description,
     }
 
 
@@ -126,3 +133,98 @@ class TestTaskToDictSerializesCreated:
         out = jira_router._task_to_dict(task)
 
         assert out["created"] is None
+
+
+class TestUpsertWritesDuedateAndDescription:
+    """Upsert INSERT and UPDATE paths both persist duedate + description."""
+
+    async def test_insert_path_writes_duedate_and_description(self, patched_jira, db_session):
+        patched_jira.get_assigned_tasks.return_value = [
+            _task_data(
+                duedate="2024-07-01",
+                description="<p>First desc</p>",
+            )
+        ]
+
+        await jira_router.get_jira_tasks(refresh=True, user=_make_fake_user())
+
+        from sqlalchemy import select
+        result = await db_session.execute(select(Task).where(Task.jira_key == "PROJ-1"))
+        task = result.scalar_one()
+        assert task.duedate == "2024-07-01"
+        assert task.description == "<p>First desc</p>"
+
+    async def test_update_path_sets_duedate_and_description_on_null_row(
+        self, patched_jira, db_session
+    ):
+        pre_existing = Task(
+            id="pre-1",
+            user_id="user-1",
+            jira_key="PROJ-1",
+            summary="old summary",
+            status="To Do",
+            status_category="new",
+            project_key="PROJ",
+            project_name="Project Alpha",
+            fetched_at=datetime.now(timezone.utc).isoformat(),
+            created=None,
+            duedate=None,
+            description=None,
+        )
+        db_session.add(pre_existing)
+        await db_session.commit()
+
+        patched_jira.get_assigned_tasks.return_value = [
+            _task_data(
+                duedate="2024-12-31",
+                description="<p>Refreshed</p>",
+            )
+        ]
+
+        await jira_router.get_jira_tasks(refresh=True, user=_make_fake_user())
+
+        await db_session.refresh(pre_existing)
+        assert pre_existing.duedate == "2024-12-31"
+        assert pre_existing.description == "<p>Refreshed</p>"
+
+
+class TestTaskToDictSerializesDuedateAndDescription:
+    """Serializer emits duedate + description (valued and null)."""
+
+    def test_serializes_duedate_and_description_valued(self):
+        task = Task(
+            id="t1",
+            user_id="user-1",
+            jira_key="PROJ-1",
+            summary="x",
+            status="To Do",
+            status_category="new",
+            fetched_at="2024-06-01T12:00:00.000+00:00",
+            created="2024-01-15T10:00:00.000+0000",
+            duedate="2024-07-01",
+            description="<p>Body</p>",
+        )
+
+        out = jira_router._task_to_dict(task)
+
+        assert out["duedate"] == "2024-07-01"
+        assert out["description"] == "<p>Body</p>"
+
+    def test_serializes_duedate_and_description_null(self):
+        task = Task(
+            id="t2",
+            user_id="user-1",
+            jira_key="PROJ-2",
+            summary="y",
+            status="To Do",
+            status_category="new",
+            fetched_at="2024-06-01T12:00:00.000+00:00",
+            created=None,
+            duedate=None,
+            description=None,
+        )
+
+        out = jira_router._task_to_dict(task)
+
+        assert out["duedate"] is None
+        assert out["description"] is None
