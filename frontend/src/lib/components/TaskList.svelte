@@ -1,7 +1,7 @@
 <script lang="ts">
 	import type { Task } from '$lib/api/tasks';
 	import type { StatusReportWithSummary } from '$lib/api/status';
-	import { getTasksState, toggleSortDirection } from '$lib/stores/tasks.svelte';
+	import { getTasksState, toggleSortDirection, toggleTaskFilter } from '$lib/stores/tasks.svelte';
 	import type { SortDirection } from '$lib/stores/tasks.svelte';
 	import TaskCard from './TaskCard.svelte';
 	import LoadingSpinner from './LoadingSpinner.svelte';
@@ -33,9 +33,17 @@
 	// reactive. Destructuring would snapshot the value once and break the toggle.
 	const tasksStore = getTasksState();
 
-	// Null-sorts-last comparator. The null check runs BEFORE the direction flip
-	// so un-backfilled tasks never appear first in either direction (REQ-SYNC-05).
-	function compareByCreated(a: Task, b: Task, dir: SortDirection): number {
+	// Comparator for tasks within a section.
+	// Primary key: tasks "in progress" (status_category === 'indeterminate') ALWAYS
+	// sort first, regardless of the date toggle — "en curso" tasks lead each section.
+	// Secondary key: creation date, direction-aware (the toggle flips ONLY this),
+	// null-sorts-last so un-backfilled tasks never jump to the top (REQ-SYNC-05).
+	function compareTasks(a: Task, b: Task, dir: SortDirection): number {
+		const aInProgress = a.status_category === 'indeterminate';
+		const bInProgress = b.status_category === 'indeterminate';
+		if (aInProgress !== bInProgress) {
+			return aInProgress ? -1 : 1;
+		}
 		const aNull = !a.created;
 		const bNull = !b.created;
 		if (aNull && bNull) return 0;
@@ -49,24 +57,31 @@
 	// Section cross-project ordering = insertion order (= JQL fetch order).
 	const groups = $derived.by<TaskGroup[]>(() => {
 		const dir = tasksStore.sortDirection;
+		// Filter BEFORE grouping: default "in progress" only, optionally add To Do.
+		const visible = tasksStore.taskFilter === 'in-progress'
+			? tasks.filter((t) => t.status_category === 'indeterminate')
+			: tasks;
 		const map = new Map<string, Task[]>();
-		for (const t of tasks) {
+		for (const t of visible) {
 			const key = (t.project_key ?? '').trim() || 'UNASSIGNED';
 			if (!map.has(key)) map.set(key, []);
 			map.get(key)!.push(t);
 		}
 		const out: TaskGroup[] = [];
 		for (const [key, items] of map) {
-			items.sort((a, b) => compareByCreated(a, b, dir));
+			items.sort((a, b) => compareTasks(a, b, dir));
 			const label = key === 'UNASSIGNED' ? 'UNASSIGNED' : (items[0]?.project_name ?? key);
 			out.push({ key, label, tasks: items });
 		}
 		return out;
 	});
 
-	// Toggle button describes the ACTION the next click will perform.
+	// Toggle buttons describe the ACTION the next click will perform.
 	const toggleLabel = $derived(
 		tasksStore.sortDirection === 'newest-first' ? 'Antiguo primero' : 'Reciente primero'
+	);
+	const filterLabel = $derived(
+		tasksStore.taskFilter === 'in-progress' ? 'Mostrar pendientes' : 'Solo en curso'
 	);
 </script>
 
@@ -80,10 +95,19 @@
 		</div>
 	{:else}
 		<div class="toolbar">
+			<button type="button" class="toggle" onclick={toggleTaskFilter}>
+				{filterLabel}
+			</button>
 			<button type="button" class="toggle" onclick={toggleSortDirection}>
 				{toggleLabel}
 			</button>
 		</div>
+		{#if groups.length === 0}
+			<div class="empty-state">
+				<p>No hay tareas en curso.</p>
+				<p class="hint">Usá "Mostrar pendientes" para ver las tareas To Do.</p>
+			</div>
+		{:else}
 		<div class="sections">
 			{#each groups as group (group.key)}
 				<section class="group">
@@ -106,6 +130,7 @@
 				</section>
 			{/each}
 		</div>
+		{/if}
 	{/if}
 </div>
 
@@ -119,6 +144,8 @@
 	.toolbar {
 		display: flex;
 		justify-content: flex-end;
+		gap: 0.5rem;
+		flex-wrap: wrap;
 	}
 
 	.toggle {

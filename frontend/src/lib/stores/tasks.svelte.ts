@@ -2,12 +2,15 @@ import { fetchTasks as apiFetchTasks } from '$lib/api/tasks';
 import type { Task } from '$lib/api/tasks';
 
 export type SortDirection = 'newest-first' | 'oldest-first';
+export type TaskFilter = 'in-progress' | 'all-active';
 
 let tasks = $state<Task[]>([]);
 let selectedTaskId = $state<string | null>(null);
 let loading = $state(false);
 let error = $state<string | null>(null);
 let sortDirection = $state<SortDirection>('newest-first');
+// Default to "in progress" only — To Do tasks are hidden until the user opts in.
+let taskFilter = $state<TaskFilter>('in-progress');
 
 export function getTasksState() {
 	return {
@@ -28,12 +31,19 @@ export function getTasksState() {
 		},
 		get sortDirection() {
 			return sortDirection;
+		},
+		get taskFilter() {
+			return taskFilter;
 		}
 	};
 }
 
 export function toggleSortDirection(): void {
 	sortDirection = sortDirection === 'newest-first' ? 'oldest-first' : 'newest-first';
+}
+
+export function toggleTaskFilter(): void {
+	taskFilter = taskFilter === 'in-progress' ? 'all-active' : 'in-progress';
 }
 
 export async function fetchTasks(refresh: boolean = false): Promise<void> {
