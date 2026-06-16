@@ -28,7 +28,10 @@
 		onReportSaved
 	}: Props = $props();
 
-	const { sortDirection } = getTasksState();
+	// Keep the store reference (do NOT destructure) — reading `tasksStore.sortDirection`
+	// inside a $derived invokes the getter, which reads the underlying $state and stays
+	// reactive. Destructuring would snapshot the value once and break the toggle.
+	const tasksStore = getTasksState();
 
 	// Null-sorts-last comparator. The null check runs BEFORE the direction flip
 	// so un-backfilled tasks never appear first in either direction (REQ-SYNC-05).
@@ -45,7 +48,7 @@
 	// Grouping is a pure presentation concern, recomputed per render (never persisted).
 	// Section cross-project ordering = insertion order (= JQL fetch order).
 	const groups = $derived.by<TaskGroup[]>(() => {
-		const dir = sortDirection;
+		const dir = tasksStore.sortDirection;
 		const map = new Map<string, Task[]>();
 		for (const t of tasks) {
 			const key = (t.project_key ?? '').trim() || 'UNASSIGNED';
@@ -62,7 +65,9 @@
 	});
 
 	// Toggle button describes the ACTION the next click will perform.
-	const toggleLabel = $derived(sortDirection === 'newest-first' ? 'Antiguo primero' : 'Reciente primero');
+	const toggleLabel = $derived(
+		tasksStore.sortDirection === 'newest-first' ? 'Antiguo primero' : 'Reciente primero'
+	);
 </script>
 
 <div class="task-list">
