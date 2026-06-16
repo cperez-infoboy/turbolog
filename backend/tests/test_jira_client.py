@@ -6,6 +6,8 @@ Covers:
   HTML-escaped string (REQ: JIRA /search/jql does NOT return renderedFields;
   `fields.description` is ADF JSON and must be parsed backend-side).
 """
+from unittest.mock import MagicMock, patch
+
 from app.services.jira_client import JiraClient, _adf_to_html
 
 
@@ -365,3 +367,45 @@ class TestAdfToHtml:
         # Defensive: a text node missing its `text` field must not raise.
         adf = {"type": "paragraph", "content": [{"type": "text"}]}
         assert _adf_to_html(adf) == "<p></p>"
+
+
+class TestSearchRequestFields:
+    """Regression guard (W2): the JIRA /search/jql POST MUST request
+    `description`, `created`, and `duedate` in its `fields` list.
+
+    A prior bug omitted `description` from the request, so descriptions arrived
+    empty even though `_normalize_tasks` knew how to parse them. Tests of
+    `_normalize_tasks` cannot catch this — they mock the response with
+    `description` already present, which masks the omission. This test pins the
+    actual outbound request payload.
+    """
+
+    async def test_search_post_requests_description_created_and_duedate(self):
+        captured: dict = {}
+
+        class _FakeAsyncClient:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return False
+
+            async def post(self, url, json=None, headers=None):
+                captured["json"] = json
+                response = MagicMock(status_code=200)
+                response.json.return_value = {"issues": []}
+                return response
+
+        client = JiraClient("example.atlassian.net", "dev@example.com", "tok")
+
+        with patch(
+            "app.services.jira_client.httpx.AsyncClient",
+            return_value=_FakeAsyncClient(),
+        ):
+            # currentUser() path — skips _find_account_id, so only the POST fires.
+            await client.get_assigned_tasks()
+
+        fields = captured["json"]["fields"]
+        assert "description" in fields, "JIRA search must request the description field"
+        assert "created" in fields
+        assert "duedate" in fields
