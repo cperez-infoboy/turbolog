@@ -1,5 +1,6 @@
 <script lang="ts">
 	import Button from './Button.svelte';
+	import favicon from '$lib/assets/favicon.svg';
 
 	interface UserInfo {
 		id: string;
@@ -18,7 +19,10 @@
 
 <header class="site-header">
 	<nav class="nav">
-		<a href="/" class="logo">TURBOLOG</a>
+		<a href="/" class="logo">
+			<img src={favicon} alt="" class="logo-icon" width="28" height="28" />
+			TURBOLOG
+		</a>
 
 		<div class="nav-links">
 			<a href="/" class="nav-link">Panel</a>
@@ -57,6 +61,9 @@
 	}
 
 	.logo {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
 		font-family: var(--font-heading);
 		font-size: 1.25rem;
 		font-weight: 900;
@@ -65,6 +72,12 @@
 			0 0 5px rgba(0, 255, 255, 0.5),
 			0 0 10px rgba(0, 255, 255, 0.3);
 		letter-spacing: 0.1em;
+	}
+
+	.logo-icon {
+		width: 28px;
+		height: 28px;
+		border-radius: 6px;
 	}
 
 	.logo:hover {
