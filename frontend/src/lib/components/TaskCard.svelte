@@ -109,6 +109,38 @@
 			setTimeout(autoExpand, 200);
 		}
 	});
+
+	// Collapsible task description ("Ver más / Ver menos").
+	// The description is HTML parsed from JIRA's ADF, so line-clamp (text-only)
+	// truncates it unpredictably — we recort by max-height instead. The toggle
+	// button only shows when the content actually overflows the collapsed height.
+	let descEl: HTMLDivElement | undefined = $state();
+	let descExpanded = $state(false);
+	let descOverflow = $state(false);
+
+	$effect(() => {
+		const isOpen = selected; // re-measure when the card opens/closes
+		task.description; // re-measure when the visible task changes
+		if (!isOpen) {
+			// Reset to collapsed when the card closes, so reopening starts fresh.
+			descExpanded = false;
+			return;
+		}
+		if (!descEl) return;
+		if (descExpanded) {
+			descOverflow = false; // expanded = nothing more to reveal
+			return;
+		}
+		const measure = () => {
+			if (descEl) descOverflow = descEl.scrollHeight > descEl.clientHeight + 1;
+		};
+		measure();
+		requestAnimationFrame(measure); // re-measure once layout/fonts settle
+	});
+
+	function toggleDesc() {
+		descExpanded = !descExpanded;
+	}
 </script>
 
 <div
@@ -149,8 +181,19 @@
 	<div class="accordion-body" class:expanded={selected}>
 		<div class="accordion-inner">
 			{#if task.description}
-				<div class="description-block">
-					{@html task.description}
+				<div class="description-wrap">
+					<div
+						class="description-block"
+						class:collapsed={!descExpanded}
+						bind:this={descEl}
+					>
+						{@html task.description}
+					</div>
+					{#if descOverflow}
+						<button type="button" class="desc-toggle" onclick={toggleDesc}>
+							{descExpanded ? 'Ver menos' : 'Ver más'}
+						</button>
+					{/if}
 				</div>
 			{/if}
 			{#if task.status_category === 'indeterminate'}
@@ -312,11 +355,16 @@
 		background: rgba(0, 0, 0, 0.3);
 		border: 1px solid var(--glass-border);
 		border-radius: 8px;
-		display: -webkit-box;
-		-webkit-line-clamp: 3;
-		line-clamp: 3;
-		-webkit-box-orient: vertical;
+		box-sizing: border-box;
+		overflow-wrap: anywhere;
+	}
+
+	/* Collapsed preview: recort by height (predictable with HTML, unlike line-clamp). */
+	.description-block.collapsed {
+		max-height: 5.4rem;
 		overflow: hidden;
+		mask-image: linear-gradient(to bottom, #000 70%, transparent 100%);
+		-webkit-mask-image: linear-gradient(to bottom, #000 70%, transparent 100%);
 	}
 
 	.description-block :global(p) {
@@ -329,6 +377,86 @@
 
 	.description-block :global(a) {
 		color: var(--neon-cyan);
+	}
+
+	.description-block :global(ul),
+	.description-block :global(ol) {
+		margin: 0 0 0.5rem;
+		padding-left: 1.25rem;
+	}
+
+	.description-block :global(li) {
+		margin: 0 0 0.25rem;
+	}
+
+	.description-block :global(code) {
+		font-family: monospace;
+		background: rgba(0, 0, 0, 0.4);
+		padding: 0.1rem 0.35rem;
+		border-radius: 4px;
+		font-size: 0.8rem;
+	}
+
+	.description-block :global(pre) {
+		background: rgba(0, 0, 0, 0.4);
+		padding: 0.75rem;
+		border-radius: 8px;
+		overflow-x: auto;
+		margin: 0 0 0.5rem;
+	}
+
+	.description-block :global(pre code) {
+		background: none;
+		padding: 0;
+	}
+
+	.description-block :global(blockquote) {
+		border-left: 3px solid var(--glass-border);
+		padding-left: 0.75rem;
+		margin: 0 0 0.5rem;
+		opacity: 0.85;
+	}
+
+	.description-block :global(h1),
+	.description-block :global(h2),
+	.description-block :global(h3) {
+		font-family: var(--font-heading);
+		font-size: 0.95rem;
+		margin: 0.5rem 0 0.25rem;
+	}
+
+	.description-block :global(img) {
+		max-width: 100%;
+		border-radius: 8px;
+	}
+
+	.description-wrap {
+		display: flex;
+		flex-direction: column;
+		gap: 0.35rem;
+	}
+
+	.desc-toggle {
+		align-self: flex-start;
+		background: none;
+		border: none;
+		padding: 0;
+		cursor: pointer;
+		font-family: var(--font-body);
+		font-size: 0.8rem;
+		font-weight: 600;
+		text-transform: uppercase;
+		letter-spacing: 0.05em;
+		color: var(--neon-cyan);
+	}
+
+	.desc-toggle:hover {
+		text-decoration: underline;
+	}
+
+	.desc-toggle:focus-visible {
+		outline: 2px solid var(--neon-cyan);
+		outline-offset: 2px;
 	}
 
 	.status-badge {
