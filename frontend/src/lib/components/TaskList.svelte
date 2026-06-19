@@ -1,8 +1,9 @@
 <script lang="ts">
 	import type { Task } from '$lib/api/tasks';
 	import type { StatusReportWithSummary } from '$lib/api/status';
-	import { getTasksState, toggleSortDirection, toggleTaskFilter } from '$lib/stores/tasks.svelte';
+	import { getTasksState, toggleSortDirection, setTaskFilter } from '$lib/stores/tasks.svelte';
 	import type { SortDirection } from '$lib/stores/tasks.svelte';
+	import { SvelteSet } from 'svelte/reactivity';
 	import TaskCard from './TaskCard.svelte';
 	import LoadingSpinner from './LoadingSpinner.svelte';
 
@@ -53,14 +54,36 @@
 		return dir === 'newest-first' ? diff : -diff;
 	}
 
+	// Global counts over the FULL task list (not the filtered view), so the totals
+	// stay accurate regardless of which tab is active. "All" = active tasks only
+	// (in-progress + to-do), matching what the "Todas" tab renders.
+	const inProgressCount = $derived(
+		tasks.filter((t) => t.status_category === 'indeterminate').length
+	);
+	const todoCount = $derived(tasks.filter((t) => t.status_category === 'new').length);
+	const allCount = $derived(inProgressCount + todoCount);
+
+	// Visibility per active tab. Computed before grouping so an empty filter shows
+	// the right empty-state. Reads `tasksStore.taskFilter` inside the $derived to
+	// stay reactive (never destructure the store — see top of file).
+	const visibleTasks = $derived.by<Task[]>(() => {
+		const filter = tasksStore.taskFilter;
+		if (filter === 'in-progress') {
+			return tasks.filter((t) => t.status_category === 'indeterminate');
+		}
+		if (filter === 'todo') {
+			return tasks.filter((t) => t.status_category === 'new');
+		}
+		return tasks.filter(
+			(t) => t.status_category === 'indeterminate' || t.status_category === 'new'
+		);
+	});
+
 	// Grouping is a pure presentation concern, recomputed per render (never persisted).
 	// Section cross-project ordering = insertion order (= JQL fetch order).
 	const groups = $derived.by<TaskGroup[]>(() => {
 		const dir = tasksStore.sortDirection;
-		// Filter BEFORE grouping: default "in progress" only, optionally add To Do.
-		const visible = tasksStore.taskFilter === 'in-progress'
-			? tasks.filter((t) => t.status_category === 'indeterminate')
-			: tasks;
+		const visible = visibleTasks;
 		const map = new Map<string, Task[]>();
 		for (const t of visible) {
 			const key = (t.project_key ?? '').trim() || 'UNASSIGNED';
@@ -76,13 +99,58 @@
 		return out;
 	});
 
-	// Toggle buttons describe the ACTION the next click will perform.
+	// Sort toggle describes the ACTION the next click will perform.
 	const toggleLabel = $derived(
 		tasksStore.sortDirection === 'newest-first' ? 'Antiguo primero' : 'Reciente primero'
 	);
-	const filterLabel = $derived(
-		tasksStore.taskFilter === 'in-progress' ? 'Mostrar pendientes' : 'Solo en curso'
+
+	// Collapsible sections — collapse is the default (focus-first UX).
+	// Modeled as the set of sections the user EXPANDED (opt-in), which starts
+	// empty = all collapsed. SvelteSet makes in-place mutation reactive, so we
+	// add/delete keys directly instead of reassigning a new Set each time.
+	let expandedGroups = new SvelteSet<string>();
+
+	// Same group-key calc as the grouping $derived above (line 66).
+	function groupKeyOf(task: Task): string {
+		return (task.project_key ?? '').trim() || 'UNASSIGNED';
+	}
+
+	function isExpanded(key: string): boolean {
+		return expandedGroups.has(key);
+	}
+
+	function toggleGroup(key: string): void {
+		if (expandedGroups.has(key)) {
+			expandedGroups.delete(key);
+		} else {
+			expandedGroups.add(key);
+		}
+	}
+
+	// selectedTaskId is global and unique (one card open at a time). If a section
+	// is collapsed and the user clicks one of its cards, the opened card would
+	// stay hidden — so expand the section first, then propagate the selection.
+	function handleSelectTask(task: Task): void {
+		expandedGroups.add(groupKeyOf(task));
+		onSelectTask(task);
+	}
+
+	const allExpanded = $derived(
+		groups.length > 0 && groups.every((g) => expandedGroups.has(g.key))
 	);
+	const expandAllLabel = $derived(allExpanded ? 'Colapsar todo' : 'Expandir todo');
+
+	function toggleAll(): void {
+		// Snapshot allExpanded BEFORE mutating expandedGroups: $derived is lazy and
+		// re-evaluates on read. Reading it AFTER clear() would reflect the
+		// already-emptied set (false) and re-expand everything — the "Colapsar todo"
+		// bug. Capture the intent first, then mutate.
+		const expand = !allExpanded;
+		expandedGroups.clear();
+		if (expand) {
+			for (const g of groups) expandedGroups.add(g.key);
+		}
+	}
 </script>
 
 <div class="task-list">
@@ -95,37 +163,90 @@
 		</div>
 	{:else}
 		<div class="toolbar">
-			<button type="button" class="toggle" onclick={toggleTaskFilter}>
-				{filterLabel}
+			<button type="button" class="toggle" onclick={toggleAll}>
+				{expandAllLabel}
 			</button>
+			<div class="filter-tabs" role="group" aria-label="Filtro de tareas">
+				<button
+					type="button"
+					class="tab"
+					class:active={tasksStore.taskFilter === 'in-progress'}
+					aria-pressed={tasksStore.taskFilter === 'in-progress'}
+					onclick={() => setTaskFilter('in-progress')}
+				>
+					En curso
+					<span class="count">{inProgressCount}</span>
+				</button>
+				<button
+					type="button"
+					class="tab"
+					class:active={tasksStore.taskFilter === 'todo'}
+					aria-pressed={tasksStore.taskFilter === 'todo'}
+					onclick={() => setTaskFilter('todo')}
+				>
+					Por hacer
+					<span class="count">{todoCount}</span>
+				</button>
+				<button
+					type="button"
+					class="tab"
+					class:active={tasksStore.taskFilter === 'all'}
+					aria-pressed={tasksStore.taskFilter === 'all'}
+					onclick={() => setTaskFilter('all')}
+				>
+					Todas
+					<span class="count">{allCount}</span>
+				</button>
+			</div>
 			<button type="button" class="toggle" onclick={toggleSortDirection}>
 				{toggleLabel}
 			</button>
 		</div>
 		{#if groups.length === 0}
 			<div class="empty-state">
-				<p>No hay tareas en curso.</p>
-				<p class="hint">Usá "Mostrar pendientes" para ver las tareas To Do.</p>
+				{#if tasksStore.taskFilter === 'in-progress'}
+					<p>No hay tareas en curso.</p>
+					<p class="hint">
+						Revisá "Por hacer"{todoCount > 0 ? ` (${todoCount} pendientes)` : ''}.
+					</p>
+				{:else if tasksStore.taskFilter === 'todo'}
+					<p>No tenés tareas por hacer.</p>
+				{:else}
+					<p>No hay tareas para mostrar.</p>
+				{/if}
 			</div>
 		{:else}
 		<div class="sections">
 			{#each groups as group (group.key)}
-				<section class="group">
-					<header class="group-header">
+				<section class="group" class:expanded={isExpanded(group.key)}>
+					<button
+						type="button"
+						class="group-header"
+						aria-expanded={isExpanded(group.key)}
+						aria-controls="group-cards-{group.key}"
+						onclick={() => toggleGroup(group.key)}
+					>
 						<span class="group-label">{group.label}</span>
 						<span class="group-count">{group.tasks.length}</span>
-					</header>
-					<div class="cards">
-						{#each group.tasks as task (task.jira_key)}
-							<TaskCard
-								{task}
-								selected={task.jira_key === selectedTaskId}
-								report={reportsByTask.get(task.jira_key)}
-								{date}
-								onclick={onSelectTask}
-								{onReportSaved}
-							/>
-						{/each}
+						<span class="chevron" class:open={isExpanded(group.key)} aria-hidden="true"></span>
+					</button>
+					<div
+						id="group-cards-{group.key}"
+						class="cards-body"
+						class:expanded={isExpanded(group.key)}
+					>
+						<div class="cards">
+							{#each group.tasks as task (task.jira_key)}
+								<TaskCard
+									{task}
+									selected={task.jira_key === selectedTaskId}
+									report={reportsByTask.get(task.jira_key)}
+									{date}
+									onclick={handleSelectTask}
+									{onReportSaved}
+								/>
+							{/each}
+						</div>
 					</div>
 				</section>
 			{/each}
@@ -173,6 +294,58 @@
 		outline-offset: 2px;
 	}
 
+	.filter-tabs {
+		display: inline-flex;
+		gap: 0.2rem;
+		background: var(--glass-bg);
+		border: 1px solid var(--glass-border);
+		border-radius: var(--border-radius);
+		padding: 0.2rem;
+	}
+
+	.tab {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.4rem;
+		font-family: var(--font-body);
+		font-size: 0.85rem;
+		font-weight: 600;
+		letter-spacing: 0.05em;
+		text-transform: uppercase;
+		color: var(--text-secondary);
+		background: transparent;
+		border: 1px solid transparent;
+		border-radius: calc(var(--border-radius) - 4px);
+		padding: 0.4rem 0.75rem;
+		cursor: pointer;
+		transition:
+			color var(--transition-speed) ease,
+			background var(--transition-speed) ease,
+			border-color var(--transition-speed) ease;
+	}
+
+	.tab:hover {
+		color: var(--neon-cyan);
+	}
+
+	.tab.active {
+		color: var(--neon-cyan);
+		background: var(--glass-bg-hover);
+		border-color: var(--glass-border-hover);
+		box-shadow: 0 0 8px rgba(0, 255, 255, 0.2);
+	}
+
+	.tab:focus-visible {
+		outline: 2px solid var(--neon-cyan);
+		outline-offset: 2px;
+	}
+
+	.tab .count {
+		font-size: 0.75rem;
+		font-weight: 700;
+		opacity: 0.8;
+	}
+
 	.sections {
 		display: flex;
 		flex-direction: column;
@@ -182,32 +355,81 @@
 	.group {
 		display: flex;
 		flex-direction: column;
+		gap: 0;
+		transition: gap var(--transition-speed) ease;
+	}
+
+	.group.expanded {
 		gap: 0.75rem;
 	}
 
 	.group-header {
 		display: flex;
-		align-items: baseline;
-		justify-content: space-between;
+		align-items: center;
 		gap: 0.75rem;
-		padding: 0 0.25rem;
+		width: 100%;
+		text-align: left;
+		font: inherit;
+		color: var(--text-primary);
+		background: transparent;
+		border: none;
 		border-bottom: 1px solid var(--glass-border);
-		padding-bottom: 0.4rem;
+		padding: 0 0.25rem 0.4rem;
+		cursor: pointer;
+		transition: color var(--transition-speed) ease;
+	}
+
+	.group-header:hover {
+		color: var(--neon-cyan);
+	}
+
+	.group-header:focus-visible {
+		outline: 2px solid var(--neon-cyan);
+		outline-offset: 2px;
 	}
 
 	.group-label {
 		font-family: var(--font-heading);
 		font-weight: 700;
 		font-size: 1.05rem;
-		color: var(--text-primary);
 		letter-spacing: 0.04em;
 	}
 
 	.group-count {
+		margin-left: auto;
 		font-family: var(--font-body);
 		font-size: 0.85rem;
 		color: var(--text-secondary);
 		opacity: 0.8;
+	}
+
+	.chevron {
+		width: 0;
+		height: 0;
+		border-left: 5px solid transparent;
+		border-right: 5px solid transparent;
+		border-top: 6px solid currentColor;
+		opacity: 0.7;
+		transition: transform var(--transition-speed) ease;
+	}
+
+	.chevron.open {
+		transform: rotate(180deg);
+	}
+
+	.cards-body {
+		display: grid;
+		grid-template-rows: 0fr;
+		transition: grid-template-rows var(--transition-speed) ease;
+	}
+
+	.cards-body.expanded {
+		grid-template-rows: 1fr;
+	}
+
+	.cards-body > .cards {
+		overflow: hidden;
+		min-height: 0;
 	}
 
 	.cards {

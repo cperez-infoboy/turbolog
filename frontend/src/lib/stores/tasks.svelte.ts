@@ -2,7 +2,7 @@ import { fetchTasks as apiFetchTasks } from '$lib/api/tasks';
 import type { Task } from '$lib/api/tasks';
 
 export type SortDirection = 'newest-first' | 'oldest-first';
-export type TaskFilter = 'in-progress' | 'all-active';
+export type TaskFilter = 'in-progress' | 'todo' | 'all';
 
 let tasks = $state<Task[]>([]);
 let selectedTaskId = $state<string | null>(null);
@@ -42,8 +42,8 @@ export function toggleSortDirection(): void {
 	sortDirection = sortDirection === 'newest-first' ? 'oldest-first' : 'newest-first';
 }
 
-export function toggleTaskFilter(): void {
-	taskFilter = taskFilter === 'in-progress' ? 'all-active' : 'in-progress';
+export function setTaskFilter(filter: TaskFilter): void {
+	taskFilter = filter;
 }
 
 export async function fetchTasks(refresh: boolean = false): Promise<void> {
