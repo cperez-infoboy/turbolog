@@ -9,6 +9,7 @@
 		selected?: boolean;
 		report?: StatusReportWithSummary | null;
 		date?: string;
+		finalized?: boolean;
 		onclick?: (task: Task) => void;
 		onReportSaved?: () => void;
 	}
@@ -18,6 +19,7 @@
 		selected = false,
 		report = null,
 		date = '',
+		finalized = false,
 		onclick,
 		onReportSaved
 	}: Props = $props();
@@ -27,6 +29,11 @@
 	let saveState = $state<'saved' | 'saving' | 'unsaved'>('unsaved');
 	let textareaEl: HTMLTextAreaElement | undefined = $state();
 	let cardEl: HTMLDivElement | undefined = $state();
+
+	// A single report can be already pushed to JIRA (jira_comment_id set) even if
+	// the whole day isn't finalized yet. That report is individually locked;
+	// `finalized` locks the entire day.
+	const sentToJira = $derived(!!report?.jira_comment_id);
 
 	// Sync content when report changes (runs on mount + whenever report changes)
 	$effect(() => {
@@ -197,38 +204,62 @@
 				</div>
 			{/if}
 			{#if task.status_category === 'indeterminate'}
-				<div class="textarea-wrapper" class:focus={saveState === 'unsaved'}>
-					<textarea
-						bind:this={textareaEl}
-						bind:value={content}
-						oninput={handleInput}
-						placeholder="Escribe tu actualización de estado..."
-						rows="4"
-					></textarea>
-				</div>
+				{#if finalized}
+					<div class="readonly-banner">
+						<span class="banner-text">Día cerrado</span>
+					</div>
+					{#if content}
+						<div class="readonly-content">{content}</div>
+					{:else}
+						<p class="pending-notice">Sin estado registrado al cerrar el día.</p>
+					{/if}
+				{:else if sentToJira}
+					<div class="readonly-banner jira-sent">
+						<span class="banner-text">Enviado a JIRA</span>
+					</div>
+					<div class="textarea-wrapper readonly" class:focus={false}>
+						<textarea
+							bind:this={textareaEl}
+							bind:value={content}
+							rows="4"
+							disabled
+							aria-readonly="true"
+						></textarea>
+					</div>
+				{:else}
+					<div class="textarea-wrapper" class:focus={saveState === 'unsaved'}>
+						<textarea
+							bind:this={textareaEl}
+							bind:value={content}
+							oninput={handleInput}
+							placeholder="Escribe tu actualización de estado..."
+							rows="4"
+						></textarea>
+					</div>
 
-				<div class="editor-footer">
-					<span
-						class="save-indicator"
-						class:unsaved={saveState === 'unsaved'}
-						class:saving={saveState === 'saving'}
-						class:saved={saveState === 'saved'}
-					>
-						{saveState === 'saved'
-							? 'Guardado'
-							: saveState === 'saving'
-								? 'Guardando...'
-								: 'Sin guardar'}
-					</span>
-					<Button
-						variant="cta"
-						onclick={handleSave}
-						disabled={!content.trim() || saving}
-						loading={saving}
-					>
-						Guardar
-					</Button>
-				</div>
+					<div class="editor-footer">
+						<span
+							class="save-indicator"
+							class:unsaved={saveState === 'unsaved'}
+							class:saving={saveState === 'saving'}
+							class:saved={saveState === 'saved'}
+						>
+							{saveState === 'saved'
+								? 'Guardado'
+								: saveState === 'saving'
+									? 'Guardando...'
+									: 'Sin guardar'}
+						</span>
+						<Button
+							variant="cta"
+							onclick={handleSave}
+							disabled={!content.trim() || saving}
+							loading={saving}
+						>
+							Guardar
+						</Button>
+					</div>
+				{/if}
 			{:else}
 				<p class="pending-notice">Tarea pendiente — el editor de status estará disponible cuando la tarea esté en curso.</p>
 			{/if}
@@ -584,4 +615,49 @@
 			padding: 0.5rem 0;
 			opacity: 0.7;
 		}
+
+	.readonly-banner {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.4rem;
+		font-family: var(--font-heading);
+		font-size: 0.75rem;
+		font-weight: 700;
+		letter-spacing: 0.08em;
+		text-transform: uppercase;
+		color: var(--neon-cyan);
+		background: rgba(0, 255, 255, 0.08);
+		border: 1px solid rgba(0, 255, 255, 0.3);
+		border-radius: 4px;
+		padding: 0.2rem 0.6rem;
+		align-self: flex-start;
+	}
+
+	.readonly-banner.jira-sent {
+		color: var(--neon-green);
+		background: rgba(0, 255, 136, 0.08);
+		border-color: rgba(0, 255, 136, 0.3);
+	}
+
+	.readonly-content {
+		font-family: var(--font-body);
+		font-size: 1rem;
+		line-height: 1.6;
+		color: var(--text-primary);
+		background: rgba(0, 0, 0, 0.3);
+		border: 1px solid var(--glass-border);
+		border-radius: 8px;
+		padding: 1rem;
+		white-space: pre-wrap;
+		overflow-wrap: anywhere;
+		opacity: 0.9;
+	}
+
+	.textarea-wrapper.readonly {
+		opacity: 0.8;
+	}
+
+	.textarea-wrapper.readonly textarea {
+		cursor: default;
+	}
 </style>

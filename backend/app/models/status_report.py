@@ -29,6 +29,7 @@ class StatusReport(Base):
     task_key: Mapped[str] = mapped_column(String, nullable=False)
     report_date: Mapped[str] = mapped_column(String, nullable=False)
     content: Mapped[str] = mapped_column(String, nullable=False)
+    jira_comment_id: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[str] = mapped_column(
         String, default=lambda: datetime.now(timezone.utc).isoformat()
     )

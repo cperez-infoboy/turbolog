@@ -14,6 +14,7 @@
 		selectedTaskId: string | null;
 		reportsByTask: Map<string, StatusReportWithSummary>;
 		date: string;
+		finalized?: boolean;
 		loading?: boolean;
 		onSelectTask: (task: Task) => void;
 		onReportSaved?: () => void;
@@ -24,6 +25,7 @@
 		selectedTaskId,
 		reportsByTask,
 		date,
+		finalized = false,
 		loading = false,
 		onSelectTask,
 		onReportSaved
@@ -163,9 +165,6 @@
 		</div>
 	{:else}
 		<div class="toolbar">
-			<button type="button" class="toggle" onclick={toggleAll}>
-				{expandAllLabel}
-			</button>
 			<div class="filter-tabs" role="group" aria-label="Filtro de tareas">
 				<button
 					type="button"
@@ -198,9 +197,52 @@
 					<span class="count">{allCount}</span>
 				</button>
 			</div>
-			<button type="button" class="toggle" onclick={toggleSortDirection}>
-				{toggleLabel}
-			</button>
+			<div class="toolbar-actions">
+				<button
+					type="button"
+					class="icon-btn"
+					title={expandAllLabel}
+					aria-label={expandAllLabel}
+					onclick={toggleAll}
+				>
+					<svg
+						viewBox="0 0 24 24"
+						fill="none"
+						stroke="currentColor"
+						stroke-width="2"
+						stroke-linecap="round"
+						stroke-linejoin="round"
+						aria-hidden="true"
+					>
+						<polyline points="15 3 21 3 21 9" />
+						<polyline points="9 21 3 21 3 15" />
+						<line x1="21" y1="3" x2="14" y2="10" />
+						<line x1="3" y1="21" x2="10" y2="14" />
+					</svg>
+				</button>
+				<button
+					type="button"
+					class="icon-btn"
+					title={toggleLabel}
+					aria-label={toggleLabel}
+					onclick={toggleSortDirection}
+				>
+					<svg
+						viewBox="0 0 24 24"
+						fill="none"
+						stroke="currentColor"
+						stroke-width="2"
+						stroke-linecap="round"
+						stroke-linejoin="round"
+						aria-hidden="true"
+					>
+						<path d="m21 16-4 4-4-4" />
+						<path d="M17 20V4" />
+						<path d="m3 8 4-4 4 4" />
+						<path d="M7 4v16" />
+					</svg>
+				</button>
+			</div>
 		</div>
 		{#if groups.length === 0}
 			<div class="empty-state">
@@ -242,6 +284,7 @@
 									selected={task.jira_key === selectedTaskId}
 									report={reportsByTask.get(task.jira_key)}
 									{date}
+									{finalized}
 									onclick={handleSelectTask}
 									{onReportSaved}
 								/>
@@ -264,32 +307,49 @@
 
 	.toolbar {
 		display: flex;
-		justify-content: flex-end;
-		gap: 0.5rem;
-		flex-wrap: wrap;
+		align-items: center;
+		justify-content: space-between;
+		gap: 0.75rem;
+		flex-wrap: nowrap;
 	}
 
-	.toggle {
-		font-family: var(--font-body);
-		font-size: 0.9rem;
-		font-weight: 600;
-		letter-spacing: 0.05em;
-		text-transform: uppercase;
-		color: var(--neon-cyan);
+	.toolbar-actions {
+		display: inline-flex;
+		gap: 0.4rem;
+	}
+
+	.icon-btn {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		width: 2rem;
+		height: 2rem;
+		padding: 0;
+		color: var(--text-secondary);
 		background: var(--glass-bg);
 		border: 1px solid var(--glass-border);
 		border-radius: var(--border-radius);
-		padding: 0.5rem 1rem;
 		cursor: pointer;
-		transition: border-color var(--transition-speed) ease, background var(--transition-speed) ease;
+		transition:
+			color var(--transition-speed) ease,
+			border-color var(--transition-speed) ease,
+			background var(--transition-speed) ease,
+			box-shadow var(--transition-speed) ease;
 	}
 
-	.toggle:hover {
+	.icon-btn svg {
+		width: 1.1rem;
+		height: 1.1rem;
+	}
+
+	.icon-btn:hover {
+		color: var(--neon-cyan);
 		background: var(--glass-bg-hover);
 		border-color: var(--glass-border-hover);
+		box-shadow: 0 0 8px rgba(0, 255, 255, 0.2);
 	}
 
-	.toggle:focus-visible {
+	.icon-btn:focus-visible {
 		outline: 2px solid var(--neon-cyan);
 		outline-offset: 2px;
 	}
@@ -306,17 +366,16 @@
 	.tab {
 		display: inline-flex;
 		align-items: center;
-		gap: 0.4rem;
+		gap: 0.35rem;
 		font-family: var(--font-body);
-		font-size: 0.85rem;
+		font-size: 0.8rem;
 		font-weight: 600;
-		letter-spacing: 0.05em;
-		text-transform: uppercase;
+		letter-spacing: 0.02em;
 		color: var(--text-secondary);
 		background: transparent;
 		border: 1px solid transparent;
 		border-radius: calc(var(--border-radius) - 4px);
-		padding: 0.4rem 0.75rem;
+		padding: 0.3rem 0.6rem;
 		cursor: pointer;
 		transition:
 			color var(--transition-speed) ease,

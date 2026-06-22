@@ -2,6 +2,7 @@ import base64
 import html
 import re
 from datetime import datetime, timezone
+from urllib.parse import quote
 
 import httpx
 
@@ -251,6 +252,43 @@ class JiraClient:
             return True
         except JiraAuthError:
             return False
+
+    async def add_comment(self, issue_key: str, comment_text: str) -> str:
+        """Post a comment on an issue and return the created comment id.
+
+        The comment body is wrapped in Atlassian Document Format (ADF) as a
+        single text paragraph. Raises JiraAuthError / JiraRateLimitError /
+        JiraError mirroring the other methods.
+        """
+        body = {
+            "body": {
+                "type": "doc",
+                "version": 1,
+                "content": [
+                    {
+                        "type": "paragraph",
+                        "content": [{"type": "text", "text": comment_text}],
+                    }
+                ],
+            }
+        }
+        async with httpx.AsyncClient(timeout=settings.JIRA_REQUEST_TIMEOUT) as client:
+            response = await client.post(
+                f"{self._base_url}/rest/api/3/issue/{quote(issue_key, safe='')}/comment",
+                json=body,
+                headers={**self._headers(), "Content-Type": "application/json"},
+            )
+
+        if response.status_code in (401, 403):
+            raise JiraAuthError("Invalid JIRA credentials")
+        if response.status_code == 429:
+            raise JiraRateLimitError("JIRA rate limit exceeded")
+        if response.status_code not in (200, 201):
+            raise JiraError(
+                f"JIRA add comment failed for {issue_key}: HTTP {response.status_code}"
+            )
+
+        return response.json()["id"]
 
     @staticmethod
     def _normalize_tasks(issues: list[dict]) -> list[dict]:

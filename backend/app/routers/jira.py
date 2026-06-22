@@ -6,7 +6,7 @@ from sqlalchemy import select
 
 from app.config import settings
 from app.database import async_session
-from app.dependencies import get_current_user
+from app.dependencies import get_current_user, get_jira_client
 from app.models.task import Task
 from app.models.user import User
 from app.services.jira_client import JiraAuthError, JiraClient, JiraError, JiraRateLimitError
@@ -14,11 +14,12 @@ from app.services.jira_client import JiraAuthError, JiraClient, JiraError, JiraR
 router = APIRouter(prefix="/api/jira", tags=["jira"])
 
 
+# Backward-compat alias: the shared factory now lives in app.dependencies so it
+# can be overridden via FastAPI's dependency_overrides. Kept here so existing
+# callers (and tests that monkeypatch this module) keep working.
 def _get_jira_client() -> JiraClient:
     """Create a JiraClient using the global admin credentials from settings."""
-    if not settings.JIRA_EMAIL or not settings.JIRA_API_TOKEN or not settings.JIRA_DOMAIN:
-        raise HTTPException(500, "JIRA is not configured on the server")
-    return JiraClient(settings.JIRA_DOMAIN, settings.JIRA_EMAIL, settings.JIRA_API_TOKEN)
+    return get_jira_client()
 
 
 @router.get("/tasks")

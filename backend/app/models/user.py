@@ -26,3 +26,6 @@ class User(Base):
     status_reports = relationship(
         "StatusReport", back_populates="user", lazy="selectin"
     )
+    daily_closures = relationship(
+        "DailyClosure", back_populates="user", lazy="selectin"
+    )
