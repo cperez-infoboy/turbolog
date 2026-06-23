@@ -13,6 +13,14 @@ from app.models.daily_closure import DailyClosure
 from app.models.status_report import StatusReport
 from app.models.task import Task
 from app.models.user import User
+from app.services.jira_client import strip_html
+from app.services.llm_client import (
+    LlmAuthError,
+    LlmConfigError,
+    LlmError,
+    LlmRateLimitError,
+    improve_status_text,
+)
 
 router = APIRouter(prefix="/api/status", tags=["status"])
 
@@ -80,6 +88,65 @@ async def create_report(
             "date": report.report_date,
             "created_at": report.created_at,
         }
+
+
+@router.post("/improve")
+async def improve_status(
+    body: dict,
+    user: User = Depends(get_current_user),
+):
+    """Improve a status draft using an OpenAI-compatible LLM.
+
+    Sends the user's draft plus the cached task context (title, description,
+    status, dates, comments) to the LLM and returns an improved version. Does
+    NOT persist anything — the result is applied to the editor for the user to
+    review and save explicitly.
+    """
+    draft = _str_field(body, "content")
+    task_key = _str_field(body, "task_key")
+    if not task_key:
+        raise HTTPException(400, "task_key is required")
+    if not draft:
+        raise HTTPException(400, "Draft content is required")
+
+    # Load the cached task to build grounding context for the LLM. If the task
+    # isn't cached (edge case), the LLM still improves the draft's grammar with
+    # empty context — never raises.
+    async with async_session() as session:
+        result = await session.execute(
+            select(Task).where(
+                Task.user_id == user.id,
+                Task.jira_key == task_key,
+            )
+        )
+        task = result.scalar_one_or_none()
+
+    context = {
+        "summary": task.summary if task else "",
+        "status": task.status if task else "",
+        "priority": task.priority if task else None,
+        "project_name": task.project_name if task else None,
+        "created": task.created if task else None,
+        "duedate": task.duedate if task else None,
+        # description is cached as HTML; flatten to plain text for the prompt.
+        "description": strip_html(task.description) if task else "",
+        "comments": task.comments if task else "",
+    }
+
+    try:
+        improved = await improve_status_text(draft, context)
+    except LlmConfigError:
+        raise HTTPException(503, "IA no configurada en el servidor")
+    except LlmRateLimitError:
+        raise HTTPException(503, "El servicio de IA está saturado, intenta nuevamente")
+    except LlmAuthError:
+        raise HTTPException(500, "Error de autenticación con la IA")
+    except LlmError:
+        # Fixed message: LlmError may wrap httpx internals (URLs, bodies) we
+        # never want to echo to the client.
+        raise HTTPException(502, "Error al contactar el servicio de IA")
+
+    return {"content": improved}
 
 
 @router.post("/finalize")

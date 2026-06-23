@@ -1,7 +1,7 @@
 import secrets
 from datetime import datetime, timezone
 
-from sqlalchemy import ForeignKey, Index, String
+from sqlalchemy import ForeignKey, Index, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -30,6 +30,9 @@ class Task(Base):
     created: Mapped[str | None] = mapped_column(String, nullable=True)
     duedate: Mapped[str | None] = mapped_column(String, nullable=True)
     description: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Plain-text concatenation of recent JIRA comments (for LLM status-improvement
+    # context only; never sent to the frontend). Text — comment threads can be long.
+    comments: Mapped[str | None] = mapped_column(Text, nullable=True)
     fetched_at: Mapped[str] = mapped_column(
         String, default=lambda: datetime.now(timezone.utc).isoformat()
     )

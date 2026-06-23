@@ -97,6 +97,7 @@ async def get_jira_tasks(
                 existing.created = task_data.get("created")
                 existing.duedate = task_data.get("duedate")
                 existing.description = task_data.get("description")
+                existing.comments = task_data.get("comments")
                 existing.fetched_at = fetched_at
             else:
                 task = Task(
@@ -112,6 +113,7 @@ async def get_jira_tasks(
                     created=task_data.get("created"),
                     duedate=task_data.get("duedate"),
                     description=task_data.get("description"),
+                    comments=task_data.get("comments"),
                     fetched_at=fetched_at,
                 )
                 session.add(task)

@@ -162,6 +162,45 @@ def _adf_to_html(node) -> str:
     return ""
 
 
+def strip_html(s: str | None) -> str:
+    """Collapse an HTML string to readable plain text (for LLM context).
+
+    Used to flatten ADF→HTML output (descriptions, comment bodies) into clean
+    text for the prompt. Strips tags, unescapes entities, collapses runs of
+    spaces/tabs. Block boundaries (<p>, <li>, <br>) are flattened to spaces.
+    """
+    text = re.sub(r"<[^>]+>", " ", s or "")
+    text = html.unescape(text)
+    return re.sub(r"[ \t]+", " ", text).strip()
+
+
+def extract_comments(comment_field) -> str:
+    """Flatten JIRA `fields.comment` into a compact plain-text block.
+
+    Each comment becomes one line: "Author (YYYY-MM-DD): body". Bodies are
+    ADF, rendered via `_adf_to_html` then flattened via `strip_html`. Capped to
+    the last 20 comments to bound prompt size. Returns "" when there is nothing
+    usable (never raises).
+    """
+    if not isinstance(comment_field, dict):
+        return ""
+    comments = comment_field.get("comments")
+    if not isinstance(comments, list) or not comments:
+        return ""
+    lines: list[str] = []
+    for comment in comments[-20:]:
+        if not isinstance(comment, dict):
+            continue
+        author = (comment.get("author") or {}).get("displayName", "Anónimo")
+        created = str(comment.get("created") or "")[:10]
+        body = strip_html(_adf_to_html(comment.get("body")))
+        if not body:
+            continue
+        label = f"{author} ({created}):" if created else f"{author}:"
+        lines.append(f"{label} {body}")
+    return "\n".join(lines)
+
+
 class JiraClient:
     """Client for JIRA Cloud REST API v3 using Basic Auth (email + API token)."""
 
@@ -226,7 +265,7 @@ class JiraClient:
             jql = f"assignee={account_id} AND statusCategory != Done ORDER BY updated DESC"
         else:
             jql = "assignee=currentUser() ORDER BY updated DESC"
-        fields = ["summary", "status", "priority", "project", "updated", "created", "duedate", "description"]
+        fields = ["summary", "status", "priority", "project", "updated", "created", "duedate", "description", "comment"]
 
         async with httpx.AsyncClient(timeout=settings.JIRA_REQUEST_TIMEOUT) as client:
             response = await client.post(
@@ -313,6 +352,7 @@ class JiraClient:
                 "created": fields.get("created", ""),
                 "duedate": fields.get("duedate"),
                 "description": _adf_to_html(fields.get("description")),
+                "comments": extract_comments(fields.get("comment")),
             })
         return tasks
 

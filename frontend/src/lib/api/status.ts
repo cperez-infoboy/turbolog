@@ -76,6 +76,21 @@ export async function deleteReport(id: string): Promise<void> {
 }
 
 /**
+ * Improve a status draft with an OpenAI-compatible LLM (server-side call).
+ * Sends the draft plus the cached task context and returns the improved text.
+ * The result is applied to the editor for the user to review before saving —
+ * nothing is persisted by this call. Throws `ApiError` (with `.status`) on
+ * failure; the 401 short-circuit in `api<T>()` keeps the auth store in sync.
+ */
+export async function improveStatus(taskKey: string, content: string): Promise<string> {
+	const data = await api<{ content: string }>('/api/status/improve', {
+		method: 'POST',
+		body: JSON.stringify({ task_key: taskKey, content })
+	});
+	return data.content;
+}
+
+/**
  * Finalize a day: POST all status reports for `date` to JIRA.
  *
  * The shared `api<T>()` helper throws `ApiError` on any non-2xx, and `ApiError`

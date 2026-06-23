@@ -1,7 +1,9 @@
 <script lang="ts">
+	import { untrack } from 'svelte';
+	import { ApiError } from '$lib/api/client';
 	import type { Task } from '$lib/api/tasks';
 	import type { StatusReportWithSummary } from '$lib/api/status';
-	import { createReport, updateReport } from '$lib/api/status';
+	import { createReport, improveStatus, updateReport } from '$lib/api/status';
 	import Button from './Button.svelte';
 
 	interface Props {
@@ -27,6 +29,11 @@
 	let content = $state('');
 	let saving = $state(false);
 	let saveState = $state<'saved' | 'saving' | 'unsaved'>('unsaved');
+	// AI status-improvement state.
+	let improving = $state(false); // request in flight
+	let revealing = $state(false); // typewriter reveal in progress
+	let improveError = $state<string | null>(null);
+	let revealTimer: ReturnType<typeof setInterval> | undefined; // non-reactive handle
 	let textareaEl: HTMLTextAreaElement | undefined = $state();
 	let cardEl: HTMLDivElement | undefined = $state();
 
@@ -35,10 +42,22 @@
 	// `finalized` locks the entire day.
 	const sentToJira = $derived(!!report?.jira_comment_id);
 
-	// Sync content when report changes (runs on mount + whenever report changes)
+	// Sync content when report changes (runs on mount + whenever report changes).
+	// `report` is the only tracked dependency: `revealing` is read via untrack so a
+	// reveal finishing never re-triggers this and clobbers the improved text. If the
+	// report DOES change mid-reveal (parent refetch), abort the reveal and adopt it.
 	$effect(() => {
+		if (untrack(() => revealing)) {
+			clearInterval(revealTimer);
+			revealing = false;
+		}
 		content = report?.content ?? '';
 		saveState = report ? 'saved' : 'unsaved';
+	});
+
+	// Cancel any in-flight AI typewriter reveal when the component unmounts.
+	$effect(() => {
+		return () => clearInterval(revealTimer);
 	});
 
 	// Scroll into view when selected
@@ -78,8 +97,56 @@
 	}
 
 	function handleInput() {
+		// If the user types during the AI typewriter reveal, their edit wins:
+		// cancel the in-flight reveal and keep editing from the current content.
+		if (revealing) {
+			clearInterval(revealTimer);
+			revealing = false;
+		}
 		saveState = 'unsaved';
 		autoExpand();
+	}
+
+	async function handleImprove() {
+		if (!content.trim() || improving || revealing) return;
+		improving = true;
+		improveError = null;
+		try {
+			const improved = await improveStatus(task.jira_key, content);
+			improving = false;
+			typewrite(improved);
+		} catch (err) {
+			improving = false;
+			// Surface the server's message when we have one (e.g. "IA no configurada
+			// en el servidor"); fall back to a generic message for network failures.
+			improveError =
+				err instanceof ApiError && err.message
+					? err.message
+					: 'No se pudo mejorar el texto. Intenta nuevamente.';
+		}
+	}
+
+	// Reveal `text` in chunks every 20ms for an "AI is writing" effect. The chunk
+	// size scales with text length so the reveal stays ~constant in time instead of
+	// crawling through very long outputs. Editing/saving stay disabled for the whole
+	// reveal (see the disabled bindings) so we never persist half-revealed text.
+	function typewrite(text: string) {
+		clearInterval(revealTimer);
+		content = '';
+		revealing = true;
+		autoExpand();
+		const chunk = Math.max(2, Math.ceil(text.length / 200));
+		let i = 0;
+		revealTimer = setInterval(() => {
+			i += chunk;
+			content = text.slice(0, i);
+			autoExpand();
+			if (i >= text.length) {
+				clearInterval(revealTimer);
+				revealing = false;
+				saveState = 'unsaved'; // programmatic set does not fire oninput
+			}
+		}, 20);
 	}
 
 	function handleHeaderClick() {
@@ -227,13 +294,32 @@
 						></textarea>
 					</div>
 				{:else}
-					<div class="textarea-wrapper" class:focus={saveState === 'unsaved'}>
+					<div class="editor-toolbar">
+						<Button
+							variant="secondary"
+							size="sm"
+							onclick={handleImprove}
+							disabled={!content.trim() || improving || revealing}
+							loading={improving}
+						>
+							✨ Mejorar con IA
+						</Button>
+						{#if improveError}
+							<span class="improve-error">{improveError}</span>
+						{/if}
+					</div>
+					<div
+						class="textarea-wrapper"
+						class:focus={saveState === 'unsaved'}
+						class:ai-working={improving}
+					>
 						<textarea
 							bind:this={textareaEl}
 							bind:value={content}
 							oninput={handleInput}
 							placeholder="Escribe tu actualización de estado..."
 							rows="4"
+							disabled={improving || revealing}
 						></textarea>
 					</div>
 
@@ -253,7 +339,7 @@
 						<Button
 							variant="cta"
 							onclick={handleSave}
-							disabled={!content.trim() || saving}
+							disabled={!content.trim() || saving || improving || revealing}
 							loading={saving}
 						>
 							Guardar
@@ -563,6 +649,23 @@
 		box-shadow: 0 0 12px rgba(0, 255, 255, 0.15);
 	}
 
+	/* AI "thinking" pulse on the editor border while the improve request is in flight. */
+	.textarea-wrapper.ai-working {
+		animation: ai-pulse 1.2s ease-in-out infinite;
+	}
+
+	@keyframes ai-pulse {
+		0%,
+		100% {
+			box-shadow: 0 0 8px rgba(0, 255, 255, 0.12);
+			border-color: var(--glass-border);
+		}
+		50% {
+			box-shadow: 0 0 22px rgba(0, 255, 255, 0.55);
+			border-color: var(--neon-cyan);
+		}
+	}
+
 	textarea {
 		width: 100%;
 		min-height: 120px;
@@ -585,6 +688,19 @@
 		display: flex;
 		align-items: center;
 		justify-content: space-between;
+	}
+
+	.editor-toolbar {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+		flex-wrap: wrap;
+	}
+
+	.improve-error {
+		font-family: var(--font-body);
+		font-size: 0.75rem;
+		color: var(--neon-pink);
 	}
 
 	.save-indicator {

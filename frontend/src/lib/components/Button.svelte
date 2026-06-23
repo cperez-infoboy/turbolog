@@ -4,6 +4,7 @@
 
 	interface Props extends HTMLAttributes<HTMLButtonElement> {
 		variant?: 'cta' | 'secondary' | 'danger';
+		size?: 'md' | 'sm';
 		disabled?: boolean;
 		loading?: boolean;
 		type?: 'button' | 'submit' | 'reset';
@@ -13,6 +14,7 @@
 
 	let {
 		variant = 'cta',
+		size = 'md',
 		disabled = false,
 		loading = false,
 		type = 'button',
@@ -24,7 +26,7 @@
 </script>
 
 <button
-	class="btn btn-{variant} {className}"
+	class="btn btn-{variant} btn-{size} {className}"
 	{type}
 	{disabled}
 	{onclick}
@@ -65,6 +67,20 @@
 	.btn:disabled {
 		opacity: 0.5;
 		cursor: not-allowed;
+	}
+
+	/* Size variant: compact tool button — less prominent than the default. */
+	.btn-sm {
+		padding: 0.3rem 0.65rem;
+		font-size: 0.72rem;
+		letter-spacing: 0.03em;
+		gap: 0.3rem;
+		border-radius: 6px;
+	}
+
+	.btn-sm .spinner {
+		width: 0.75rem;
+		height: 0.75rem;
 	}
 
 	/* CTA variant */
