@@ -25,7 +25,7 @@
 		</a>
 
 		<div class="nav-links">
-			<a href="/" class="nav-link">Panel</a>
+			<a href="/" class="nav-link">Informar status</a>
 		</div>
 
 		<div class="user-menu">
