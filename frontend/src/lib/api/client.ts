@@ -11,6 +11,10 @@ export async function api<T>(path: string, options: RequestInit = {}): Promise<T
 	const response = await fetch(path, {
 		...options,
 		credentials: 'include',
+		// Never serve API responses from the HTTP cache. Without this, a stale
+		// /api/auth/me (e.g. cached before a user became admin) is returned on
+		// navigation, so is_admin lags behind reality until a manual refresh.
+		cache: 'no-store',
 		headers: {
 			'Content-Type': 'application/json',
 			...options.headers

@@ -7,6 +7,7 @@
 		email: string;
 		name: string;
 		picture: string | null;
+		is_admin: boolean;
 	}
 
 	interface Props {
@@ -26,6 +27,10 @@
 
 		<div class="nav-links">
 			<a href="/" class="nav-link">Informar status</a>
+			{#if user?.is_admin}
+				<a href="/administracion" class="nav-link">Administración</a>
+				<a href="/auditoria" class="nav-link">Auditoría</a>
+			{/if}
 		</div>
 
 		<div class="user-menu">

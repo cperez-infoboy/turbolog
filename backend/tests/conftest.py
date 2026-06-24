@@ -18,7 +18,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.database import Base
 # Import models so Base.metadata knows about every table.
-from app.models import StatusReport, Task, User  # noqa: F401
+from app.models import AllowedEmail, StatusReport, Task, User  # noqa: F401
 # Ensure DailyClosure registers with metadata (imported for side effect).
 from app.models.daily_closure import DailyClosure  # noqa: F401
 

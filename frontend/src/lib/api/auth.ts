@@ -6,6 +6,7 @@ export interface UserInfo {
 	name: string;
 	picture: string | null;
 	created_at: string;
+	is_admin: boolean;
 }
 
 export function getGoogleLoginUrl(): string {

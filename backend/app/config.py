@@ -11,7 +11,7 @@ class Settings(BaseSettings):
     JWT_EXPIRE_HOURS: int = 24
 
     # Database
-    DATABASE_URL: str = "sqlite+aiosqlite:///./turbolog.db"
+    DATABASE_URL: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/turbolog"
 
     # App
     APP_URL: str = "http://localhost:5173"
@@ -37,6 +37,13 @@ class Settings(BaseSettings):
     # "enabled". Empty = omit the field entirely (for OpenAI and other providers
     # that don't support it). DeepSeek v4 defaults to thinking ENABLED.
     LLM_THINKING: str = ""
+
+    # Audit / reminders
+    REMINDER_TIME: str = "17:30"  # "HH:MM" 24h, dias habiles
+    AUDIT_TIMEZONE: str = "America/Argentina/Buenos_Aires"  # tz del cron y de "today"
+    ADMIN_EMAILS: str = ""  # seed de super-admins (bootstrap, inmutable via API)
+    NOTIFIER_MODE: str = "log"  # "log" ahora; "smtp" futuro
+    ENABLE_SCHEDULER: bool = True  # true en contenedor scheduler; false en web
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 

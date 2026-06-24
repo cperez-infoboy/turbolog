@@ -7,6 +7,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.routers.auth import router as auth_router
+from app.routers.audit import router as audit_router
 from app.routers.jira import router as jira_router
 from app.routers.status import router as status_router
 
@@ -23,6 +24,7 @@ app.add_middleware(
 
 # API routes registered BEFORE static mount
 app.include_router(auth_router)
+app.include_router(audit_router)
 app.include_router(jira_router)
 app.include_router(status_router)
 
@@ -59,6 +61,11 @@ if SERVE_STATIC and STATIC_DIR.is_dir():
             return FileResponse(str(file_path))
         # Otherwise serve index.html for client-side routing
         index = STATIC_DIR / "index.html"
+        # index.html is the SPA entry and references content-hashed JS/CSS. It MUST
+        # NOT be cached: otherwise the browser serves a stale bundle (referencing
+        # old assets) after a deploy, so new UI (e.g. admin nav links) is missing
+        # until a manual refresh. Hashed assets under /_app/immutable stay cacheable.
+        no_cache = {"Cache-Control": "no-store"}
         if index.is_file():
-            return FileResponse(str(index))
-        return FileResponse(str(index))
+            return FileResponse(str(index), headers=no_cache)
+        return FileResponse(str(index), headers=no_cache)

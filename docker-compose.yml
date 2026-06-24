@@ -1,5 +1,5 @@
 services:
-  # ── Backend: FastAPI + SPA estático + SQLite ─────────────────────────
+  # ── Backend: FastAPI + SPA estático (PostgreSQL externo vía .env) ────
   backend:
     build:
       context: .
@@ -9,10 +9,8 @@ services:
     environment:
       - SERVE_STATIC=true
       - STATIC_DIR=/app/static
-      - DATABASE_URL=sqlite+aiosqlite:///./data/turbolog.db
     volumes:
       - ./backend/.env:/app/.env:ro
-      - backend-data:/app/data
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
       interval: 30s
@@ -21,5 +19,18 @@ services:
       start_period: 10s
     restart: unless-stopped
 
-volumes:
-  backend-data:
+  # ── Scheduler: procesos programados (recordatorios, auditorías, ...) ──
+  # Reutiliza la misma imagen del backend; solo cambia el comando. El reloj
+  # (APScheduler) vive aquí, desacoplado del server web. Añadir procesos
+  # futuros = sumar un JobSpec en backend/app/jobs/registry.py.
+  scheduler:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    command: ["sh", "-c", "uv run alembic upgrade head && uv run python -m app.scheduler_runner"]
+    volumes:
+      - ./backend/.env:/app/.env:ro
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped

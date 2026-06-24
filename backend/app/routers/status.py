@@ -13,6 +13,7 @@ from app.models.daily_closure import DailyClosure
 from app.models.status_report import StatusReport
 from app.models.task import Task
 from app.models.user import User
+from app.services.audit_service import compute_user_month_summary
 from app.services.jira_client import strip_html
 from app.services.llm_client import (
     LlmAuthError,
@@ -304,6 +305,18 @@ async def finalize_day(
 
         # Full success: the claim from above is the final closure.
         return {"finalized": True, "posted": posted, "finalized_at": closure.finalized_at}
+
+
+@router.get("/summary")
+async def get_month_summary(user: User = Depends(get_current_user)):
+    """Current-month audit summary for the authenticated user.
+
+    Returns expected/reported/faltas counts and the specific falta dates for the
+    current month (per ``settings.AUDIT_TIMEZONE``). Available to any user —
+    this is the user's own data, not an admin-only report.
+    """
+    summary = await compute_user_month_summary(async_session, user.id)
+    return summary
 
 
 @router.get("/today")

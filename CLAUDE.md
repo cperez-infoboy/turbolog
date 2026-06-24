@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Resumen del proyecto
 
-Turbolog — herramienta de reportes de estado diario para tareas de JIRA Cloud. Los usuarios se autentican con Google OAuth, ven sus tareas asignadas de JIRA, y escriben actualizaciones de estado diarias por tarea.
+Turbolog — herramienta de reportes de estado diario para tareas de JIRA Cloud. Los usuarios se autentican con Google OAuth, ven sus tareas asignadas de JIRA, escriben actualizaciones de estado diarias por tarea, y las publican en JIRA al "Cerrar día". Incluye **auditoría mensual de cumplimiento**, **recordatorios automáticos a las 17:30**, **control de acceso por allow-list de correos**, y un **panel de administración**.
 
 ## Comandos
 
@@ -12,12 +12,13 @@ Turbolog — herramienta de reportes de estado diario para tareas de JIRA Cloud.
 ```bash
 uv sync                     # instalar dependencias
 uv run alembic upgrade head # ejecutar migraciones de BD
+uv run pytest -q            # suite de tests (strict TDD)
 uvicorn app.main:app --reload --port 8081  # dev sin Docker (debe ser 8081, ver nota)
 ```
 
-> **Puerto 8081, no 8000**: el proxy de Vite apunta a `localhost:8081` ([`frontend/vite.config.ts`](frontend/vite.config.ts)). En dev sin Docker el backend **debe** escuchar en `8081` para que el frontend lo encuentre. El `8000` solo aparece como puerto *interno* del contenedor Docker, mapeado a host `8081`.
+> **Puerto 8081, no 8000**: el proxy de Vite apunta a `localhost:8081` ([`frontend/vite.config.ts`](frontend/vite.config.ts)). En dev sin Docker el backend **debe** escuchar en `8081`. El `8000` es el puerto *interno* del contenedor Docker, mapeado a host `8081`.
 
-Sin suite de tests todavía; `pytest` y `pytest-asyncio` están en dev deps pero no hay archivos de test.
+**Tests**: `pytest` + `pytest-asyncio` (`asyncio_mode = "auto"`). Harness en [`tests/conftest.py`](backend/tests/conftest.py): in-memory SQLite por test (`Base.metadata.create_all`); los routers abren su propia `async_session()` directo → los tests **parchean** `<router>.async_session = session_factory` y sobreescriben `get_current_user`/`get_jira_client` vía `app.dependency_overrides`. Strict TDD está activo.
 
 ### Frontend (desde `frontend/`)
 ```bash
@@ -27,63 +28,70 @@ npm run build              # build producción → frontend/build/
 npm run check              # svelte-check (errores de tipos)
 ```
 
-### Docker (un solo comando, desde la raíz del repo)
+### Docker (desde la raíz del repo)
 ```bash
-docker compose up -d --build    # build + iniciar (contenedor único)
+docker compose up -d --build    # build + iniciar (backend + scheduler)
 docker compose down -v          # detener + eliminar volúmenes
 ```
 
-El Dockerfile es multi-stage: Node compila el frontend, luego Python arma el backend con los archivos estáticos embebidos. Un solo contenedor, sin volúmenes compartidos. Internamente escucha en `8000`, publicado en host `8081` (mapeo `8081:8000`). Healthcheck sobre `GET /api/health`.
+Dos servicios, **misma imagen** (multi-stage: Node compila el frontend, Python arma el backend con estáticos embebidos):
+- **backend** — FastAPI + SPA estática. Internamente `8000`, host `8081`. Healthcheck `GET /api/health`.
+- **scheduler** — procesos programados. `command: uv run python -m app.scheduler_runner`. Sin puertos. Depende de `backend` (healthy).
 
 ## Arquitectura
 
 **Monorepo, SPA same-origin**: FastAPI sirve el build estático de SvelteKit, eliminando CORS en producción.
 
 ### Backend (`backend/`)
-- **FastAPI** + **SQLAlchemy 2.0 async** + **SQLite** (dev) / PostgreSQL (prod). JWT con `python-jose`, HTTP a JIRA con `httpx`. Package manager: `uv`.
-- **Flujo de auth**: Google OAuth → JWT en cookie `auth_token` → dependency `get_current_user` valida en cada request
-- **Integración JIRA**: Token admin global (Basic Auth) vía `jira_client.py`. Tareas cacheadas en BD con TTL (default 300s). Usa JIRA Cloud REST API v3 `POST /rest/api/3/search/jql` (el endpoint viejo `GET /search` devuelve 410 Gone). JQL: `assignee=<accountId> AND statusCategory != Done ORDER BY updated DESC`.
-- **Config**: `pydantic_settings` lee desde `.env` (`backend/app/config.py`). Las flags `SERVE_STATIC` / `STATIC_DIR` son excepción: se leen directo con `os.getenv` (no vía pydantic).
+- **FastAPI** + **SQLAlchemy 2.0 async** + **PostgreSQL** (externo, vía `DATABASE_URL`). JWT con `python-jose`, HTTP a JIRA con `httpx`, LLM OpenAI-compatible con `openai`. Package manager: `uv`.
+- **Auth + control de acceso**: Google OAuth → JWT en cookie `auth_token` → `get_current_user` valida en cada request. **Allow-list de correos** (`allowed_emails`): `can_login(email)` se revisa en **cada login** (`google_callback`); quitar un correo revoca el acceso en el próximo intento. Seed `ADMIN_EMAILS` siempre permitido (bootstrap al login verificado por Google).
+- **Roles**: `User.is_admin` (DB) + seed `ADMIN_EMAILS` (inmutable vía API). `require_admin` = flag OR seed. `User.is_audited` = sujeto a reporte de status.
+- **JIRA**: token admin global (Basic Auth) vía `jira_client.py`. Tareas cacheadas en BD con TTL (default 300s). JIRA Cloud REST API v3 `POST /rest/api/3/search/jql`. JQL: `assignee=<accountId> AND statusCategory != Done ORDER BY updated DESC`.
+- **Config**: `pydantic_settings` lee `.env` (`backend/app/config.py`). Las flags `SERVE_STATIC` / `STATIC_DIR` son excepción: se leen con `os.getenv`.
 - **Archivos clave**:
-  - `app/main.py` — setup de la app, CORS (solo dev), montaje de archivos estáticos, catch-all para SPA routing, endpoint `/api/health`
-  - `app/dependencies.py` — `get_db_session()`, `get_current_user()` (validación de JWT cookie)
-  - `app/routers/auth.py` — flujo Google OAuth, login/register/logout (`/api/auth`)
-  - `app/routers/jira.py` — endpoint de listado de tareas + lógica de cache DB-backed (`/api/jira`)
-  - `app/routers/status.py` — CRUD para reportes de estado diarios (`/api/status`)
-  - `app/services/jira_client.py` — wrapper de JIRA API (búsqueda por JQL, lookup de usuario). Excepciones: `JiraAuthError`→500, `JiraRateLimitError`→503, `JiraError`→502
-  - `app/models/` — modelos SQLAlchemy: `User`, `Task`, `StatusReport`
+  - `app/main.py` — setup de la app, CORS (solo dev), montaje de estáticos, catch-all SPA (`index.html` con `Cache-Control: no-store`), `/api/health`
+  - `app/dependencies.py` — `get_current_user`, `require_admin`, `is_super_admin`, `can_login`, `_admin_seed`, `get_notifier`
+  - `app/routers/auth.py` — Google OAuth, login/register/logout, `/me` (+`is_admin`), gate `can_login` en callback/register
+  - `app/routers/jira.py` — listado de tareas + cache DB-backed (`/api/jira`)
+  - `app/routers/status.py` — CRUD de status, `/improve` (LLM), `/finalize` (Cerrar día), `/summary` (contador mensual propio)
+  - `app/routers/audit.py` — admin: `GET /users`, `PATCH /users/{id}` (anti-lockout + seed inmutable, expone `is_seed`), `GET /monthly` (solo auditados), `POST /run-reminders`, `GET/POST/DELETE /allowed-emails`
+  - `app/services/` — `jira_client.py`, `llm_client.py`, `audit_service.py` (cómputo puro de faltas, toma `session_factory`), `notifier.py` (`Notifier` Protocol / `LogNotifier` / `build_notifier`)
+  - `app/jobs/` — `reminder.py` (core puro + job, solo auditados), `registry.py` (`JobSpec` + `build_jobs`, **punto de extensión** para más procesos), `engine.py` (APScheduler start/stop)
+  - `app/scheduler_runner.py` — entrypoint del contenedor scheduler (`AsyncIOScheduler`, graceful SIGTERM)
+  - `app/models/` — `User` (+`is_admin`/`is_audited`), `Task` (+`status_category`), `StatusReport` (+`jira_comment_id`), `DailyClosure`, `AllowedEmail`
 
-#### Cache de tareas (DB-backed, no in-memory)
-`jira.py` consulta rows de `Task` donde `fetched_at >= now - JIRA_CACHE_TTL`. En miss, hace **upsert** por `(user_id, jira_key)` y refresca `fetched_at`. El query param `?refresh=true` fuerza fetch a JIRA saltando el cache. En `JiraRateLimitError` (429) o `JiraError`, sirve cache stale (ignorando TTL) y devuelve `{"tasks": [...], "stale": true}`.
+#### Auditoría, recordatorios y control de acceso
+- **"Día cumplido"** = existe `DailyClosure(user, date)` (señal autoritativa; contar `StatusReport` sueltos escondería faltas). **"Falta"** = día hábil Lun-Vie sin cierre (sin feriados/excepciones en v1; los días hábiles futuros del mes no se cuentan).
+- `audit_service`: `expected_weekdays` (Lun-Vie ≤ hoy), `compute_month_audit/summary/for_all_users`. **Derivado on-the-fly** de `daily_closures` (no se persisten snapshots).
+- **Recordatorio 17:30** (días hábiles): `process_user_for_reminder` → si hoy no cumplió, `notifier.remind`. Motor `AsyncIOScheduler` (jobs como coroutines, comparten `async_session`); `coalesce`, `misfire_grace_time=3600`, `max_instances=1`.
+- **Contenedor scheduler dedicado**: misma imagen que el backend, solo cambia el `command`. El web no tiene reloj. Añadir procesos futuros = un `JobSpec` en `jobs/registry.build_jobs`.
+- **Allow-list**: tabla `allowed_emails`; `can_login` en cada login (revocación real). La migración siembra la lista con los `DISTINCT lower(email)` de los usuarios existentes (nadie queda bloqueado al desplegar).
 
 #### Modelo `Task` — campo `status_category`
-`status_category` (String, nullable) se popula desde `fields.status.statusCategory.key` de JIRA — valores canónicos `new` / `indeterminate` / `done`, que normalizan los estados que varían de nombre por proyecto (ej. "In Progress", "Code Review"). Migración: `aa0c300eac79`.
+`status_category` (String, nullable) desde `fields.status.statusCategory.key` de JIRA — valores `new` / `indeterminate` / `done`. Migración: `aa0c300eac79`.
 
 ### Frontend (`frontend/`)
 - **SvelteKit SPA** (Svelte 5, adapter-static, `ssr: false`, `prerender: false`, `fallback: 'index.html'`). **No hay `svelte.config.js`**: toda la config (adapter-static, fallback, runes forzadas, proxy Vite) vive en [`vite.config.ts`](frontend/vite.config.ts). `ssr`/`prerender` se setean en `+layout.ts`.
-- **Rutas**: `/` (dashboard principal), `/login`, `/register`. (El dir `settings/` está vacío, sin página todavía.)
-- **Cliente API**: `src/lib/api/client.ts` — wrapper de `fetch` con `credentials: 'include'` y headers JSON. Lanza `ApiError` (con `.status`) en no-ok y **short-circuit en 401** (el auth store depende de esto para detectar sesión caída). Los módulos `auth.ts`, `tasks.ts`, `status.ts` usan el helper `api<T>()`.
-- **`tasks.ts` maneja dos response shapes**: `Task[]` (cache fresca) o `{ tasks, stale: true }` (fallback stale de JIRA).
-- **State management**: Runes de Svelte 5 en `src/lib/stores/`. Los archivos **deben** llamarse `*.svelte.ts` (sino las runes no compilan fuera de componentes). Patrón getter-factory: `getTasksState()` / `getAuthState()` devuelven un objeto de getters reactivos; las acciones (`fetchTasks`, `checkAuth`, etc.) se exportan junto al getter.
-- **Proxy Vite**: el dev server proxya `/api` a `http://localhost:8081` ([`vite.config.ts`](frontend/vite.config.ts)).
-- **Patrón UI**: Layout acordeón de una sola columna. Los `TaskCard` se expanden inline para mostrar el editor de status — no hay panel editor separado. El editor se **gatea** por `task.status_category === 'indeterminate'`; el resto muestra un aviso de "tarea pendiente".
-- **Diseño**: Theme neon/cyberpunk oscuro. CSS custom properties en `app.css` (`--neon-cyan`, `--neon-pink`, `--neon-green`, `--glass-bg`, etc.). Fuentes: Orbitron (títulos), Rajdhani (body). Sin Tailwind. CSS scoped por componente.
+- **Rutas**: `/` (dashboard), `/login`, `/register`, `/administracion` (admin: usuarios + allow-list + recordatorios), `/auditoria` (admin: reporte mensual), `/no-access` (pública, sin acceso).
+- **Cliente API**: `src/lib/api/client.ts` — `fetch` con `credentials: 'include'`, **`cache: 'no-store'`** (evita responses stale), headers JSON. Lanza `ApiError` (con `.status`) en no-ok y **short-circuit en 401**. Módulos `auth.ts`, `tasks.ts`, `status.ts`, `audit.ts` usan `api<T>()`.
+- **State management**: Runes de Svelte 5 en `src/lib/stores/*.svelte.ts` (los archivos **deben** llamarse `*.svelte.ts`). Patrón getter-factory: `getTasksState()` / `getAuthState()` (con `isAdmin`). `checkAuth()` se llama al montar en `+layout.svelte`.
+- **Patrón UI**: Layout acordeón de una sola columna. `TaskCard` se expande inline para el editor de status (gate por `status_category === 'indeterminate'`). Theme neon/cyberpunk oscuro (tokens en `app.css`: `--neon-cyan/-pink/-green`, `--glass-bg`; Orbitron/Rajdhani). Sin Tailwind. CSS scoped.
+- **Panel admin** (`/administracion`, `/auditoria`): admin-only (guard `$effect` + link en Header solo si `is_admin`). Toggles optimistas (Auditado/Admin) con locks para seed/último admin; allow-list con lock para seed/propio correo.
 
 ### Flujo de datos
-1. Usuario autentica vía Google OAuth → se setea cookie JWT
-2. `+layout.svelte` llama `checkAuth()` al montar; muestra pantalla "Cargando..." y, si no autenticado (y no está en ruta pública), redirige a `/login` vía `window.location.href`
-3. `+page.svelte` obtiene tareas y reportes al montar; un selector de fecha recarga los reportes
-4. Las tareas se renderizan como items acordeón `TaskCard` con editores de status inline
-5. Los reportes se guardan vía llamadas API `createReport` / `updateReport`
-6. Las tareas de JIRA se cachean en la BD del backend con TTL configurable
+1. Google OAuth → cookie JWT (solo si `can_login(email)` pasa; si no, redirect a `/no-access`).
+2. `+layout.svelte` llama `checkAuth()` al montar; si no autenticado (y no es ruta pública) redirige a `/login`.
+3. `/` obtiene tareas/reportes; "Cerrar día" (`/finalize`) publica cada status como comentario JIRA y bloquea el día.
+4. Admin: `/administracion` gestiona auditados/admins/allow-list; `/auditoria` ve faltas mensuales. El recordatorio 17:30 corre en el contenedor `scheduler` (solo a usuarios `is_audited` sin cierre del día).
 
 ## Patrones clave
 
-- **Svelte 5**: Usar `$props()`, `$state()`, `$effect()`, `onclick={...}` (no `on:click`). `{#each items as item (item.id)}` con key. Stores en archivos `.svelte.ts`, exportados vía getter-factory (`getXxxState()`).
-- **Dependencies del backend**: Inyectar `get_current_user` para endpoints protegidos, `get_db_session` para acceso a BD.
-- **JIRA JQL**: Usar `accountId` (no email) para el campo `assignee`. Buscar primero vía `/rest/api/3/user/search`. Filtrar `statusCategory != Done`.
-- **Cache de JIRA**: DB-backed por `fetched_at`, upsert por `(user_id, jira_key)`. No crear cache in-memory.
-- **Migraciones**: Alembic auto-genera desde los modelos. Ejecutar `alembic upgrade head` al iniciar (el contenedor Docker lo hace en el CMD).
+- **Svelte 5**: `$props()`, `$state()`, `$derived()`, `$effect()`, `onclick={...}` (no `on:click`). `{#each items as item (item.id)}` con key. Stores en `.svelte.ts` vía getter-factory. Validar componentes nuevos con `svelte-autofixer` (MCP Svelte).
+- **Dependencies del backend**: `get_current_user` (protegidos), `require_admin` (admin), `get_notifier`. Los routers abren `async_session()` directo (testeable parcheando el módulo).
+- **Auditoría**: derivada on-the-fly de `daily_closures`. `audit_service.compute_*` toman el `session_factory` (abren su propia sesión).
+- **Caching**: `cache: 'no-store'` en `api<T>()` (responses siempre frescos); `index.html` servido con `Cache-Control: no-store` (evita servir bundle SPA stale tras un deploy). Los assets hasheados (`/_app/immutable`) sí son cacheables.
+- **JIRA JQL**: `accountId` (no email) para `assignee`. Filtrar `statusCategory != Done`.
+- **Migraciones**: Alembic auto-genera desde los modelos. `alembic upgrade head` al iniciar (CMD del backend). Head actual: `4e9aadb4fe66`.
 
 ## Variables de entorno
 
@@ -92,9 +100,11 @@ Ver [`backend/.env.example`](backend/.env.example). Definidas en [`backend/app/c
 - `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` — OAuth Google
 - `JWT_SECRET` — cambiar en producción (default `dev-secret-change-me`)
 - `JWT_EXPIRE_HOURS` — duración del JWT (default `24`)
-- `DATABASE_URL` — dev default `sqlite+aiosqlite:///./turbolog.db`; prod usa `sqlite+aiosqlite:///./data/turbolog.db` con volumen `backend-data`
-- `APP_URL` — URL pública de la app para redirects OAuth (default `http://localhost:5173`)
+- `DATABASE_URL` — PostgreSQL externo (ej. `postgresql+asyncpg://user:pass@host:5432/turbolog`)
+- `APP_URL` — URL pública para redirects OAuth (default `http://localhost:5173`)
 - `JIRA_EMAIL` / `JIRA_API_TOKEN` / `JIRA_DOMAIN` — integración JIRA Cloud
-- `JIRA_CACHE_TTL` — TTL del cache de tareas en segundos (default `300`)
-- `JIRA_REQUEST_TIMEOUT` — timeout de requests a JIRA en segundos (default `10`)
-- `SERVE_STATIC=true` / `STATIC_DIR=/app/static` — para producción en Docker (leídas vía `os.getenv`, no pydantic)
+- `JIRA_CACHE_TTL` — TTL del cache de tareas en segundos (default `300`); `JIRA_REQUEST_TIMEOUT` (default `10`)
+- `LLM_API_KEY` / `LLM_BASE_URL` / `LLM_MODEL` / `LLM_TIMEOUT` / `LLM_MAX_TOKENS` / `LLM_THINKING` — mejora de status con LLM (vacío deshabilita)
+- `ADMIN_EMAILS` — seed de super-admins (inmutable vía API; bootstrap al login verificado por Google)
+- `REMINDER_TIME` (`"17:30"`, HH:MM 24h días hábiles) · `AUDIT_TIMEZONE` (**tzdb key válido**, ej. `America/Santiago`, NO `America/Chile/Santiago`) · `NOTIFIER_MODE` (`"log"`, `"smtp"` futuro) · `ENABLE_SCHEDULER` (bool)
+- `SERVE_STATIC=true` / `STATIC_DIR=/app/static` — producción en Docker (leídas vía `os.getenv`, no pydantic)

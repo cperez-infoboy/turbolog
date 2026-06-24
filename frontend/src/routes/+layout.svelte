@@ -9,7 +9,7 @@
 	let { children } = $props();
 	const auth = getAuthState();
 
-	const publicRoutes = ['/login', '/register'];
+	const publicRoutes = ['/login', '/register', '/no-access'];
 
 	onMount(() => {
 		checkAuth();
