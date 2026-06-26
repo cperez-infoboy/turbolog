@@ -18,6 +18,9 @@ export function getAuthState() {
 		},
 		get isAdmin() {
 			return user?.is_admin ?? false;
+		},
+		get isAudited() {
+			return user?.is_audited ?? false;
 		}
 	};
 }

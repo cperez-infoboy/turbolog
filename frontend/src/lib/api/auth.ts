@@ -7,6 +7,8 @@ export interface UserInfo {
 	picture: string | null;
 	created_at: string;
 	is_admin: boolean;
+	is_audited: boolean;
+	telegram_chat_id: string | null;
 }
 
 export function getGoogleLoginUrl(): string {

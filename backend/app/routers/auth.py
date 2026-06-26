@@ -258,6 +258,8 @@ async def me(user: User = Depends(get_current_user)):
         "picture": user.picture,
         "created_at": user.created_at,
         "is_admin": user.is_admin or (user.email.strip().lower() in _admin_seed()),
+        "is_audited": bool(user.is_audited),
+        "telegram_chat_id": user.telegram_chat_id,
     }
 
 
