@@ -18,6 +18,16 @@ export interface UserMonthAudit {
 	falta_dates: string[];
 }
 
+export interface UserDetailAudit {
+	user_id: string;
+	user_email: string;
+	user_name: string;
+	expected_days: number;
+	reported_days: number;
+	faltas: number;
+	falta_dates: string[];
+}
+
 export interface AllowedEmail {
 	email: string;
 	added_by: string | null;
@@ -42,6 +52,16 @@ export async function updateUserFlags(
 export async function getMonthlyAudit(year: number, month: number): Promise<UserMonthAudit[]> {
 	return api<UserMonthAudit[]>(
 		`/api/audit/monthly?year=${year}&month=${month}`
+	);
+}
+
+export async function getUserMonthlyAudit(
+	userId: string,
+	year: number,
+	month: number
+): Promise<UserDetailAudit> {
+	return api<UserDetailAudit>(
+		`/api/audit/monthly/${userId}?year=${year}&month=${month}`
 	);
 }
 
