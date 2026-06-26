@@ -6,15 +6,19 @@ The router opens its own ``async_session()`` per the repo pattern, so tests patc
 """
 from __future__ import annotations
 
+from datetime import date, datetime, timezone
+
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 from sqlalchemy import func, select
 
 from app.database import async_session
 from app.dependencies import _admin_seed, get_notifier, is_super_admin, require_admin
 from app.jobs.reminder import run_reminder_job
 from app.models.allowed_email import AllowedEmail
+from app.models.audit_period import AuditPeriod
 from app.models.user import User
-from app.services.audit_service import compute_audit_for_all_users
+from app.services.audit_service import compute_audit_for_all_users, compute_month_audit
 
 router = APIRouter(prefix="/api/audit", tags=["audit"])
 
@@ -34,6 +38,18 @@ def _user_shape(user: User) -> dict:
         "is_audited": bool(user.is_audited),
         "is_seed": is_super_admin(user),
     }
+
+
+class UserDetailAudit(BaseModel):
+    """Response model for the per-user monthly audit endpoint."""
+
+    user_id: str
+    user_email: str
+    user_name: str
+    expected_days: int
+    reported_days: int
+    faltas: int
+    falta_dates: list[date]
 
 
 @router.get("/users")
@@ -72,7 +88,35 @@ async def update_user_flags(
         is_seed = user.email.strip().lower() in seed
 
         if new_is_audited is not None:
-            user.is_audited = bool(new_is_audited)
+            new_val = bool(new_is_audited)
+            old_val = bool(user.is_audited)
+
+            if new_val != old_val:
+                now_iso = datetime.now(timezone.utc).isoformat()
+
+                if new_val:
+                    # OFF → ON: open a new audit period.
+                    session.add(AuditPeriod(
+                        user_id=user.id,
+                        started_at=now_iso,
+                    ))
+                else:
+                    # ON → OFF: close the active period.
+                    active = await session.scalar(
+                        select(AuditPeriod).where(
+                            AuditPeriod.user_id == user.id,
+                            AuditPeriod.ended_at.is_(None),
+                        )
+                    )
+                    if active is not None:
+                        started = datetime.fromisoformat(active.started_at)
+                        if (datetime.now(timezone.utc) - started).total_seconds() < 86400:
+                            # Same-day toggle: discard the period entirely.
+                            await session.delete(active)
+                        else:
+                            active.ended_at = now_iso
+
+            user.is_audited = new_val
 
         if new_is_admin is not None:
             if is_seed:
@@ -121,6 +165,43 @@ async def monthly_report(
 
     entries = await compute_audit_for_all_users(async_session, year, month)
     return entries
+
+
+@router.get("/monthly/{user_id}")
+async def user_monthly_report(
+    user_id: str,
+    year: int,
+    month: int,
+    _admin: User = Depends(require_admin),
+):
+    """Monthly audit report for a single user.
+
+    Returns 404 if the user does not exist or is not audited.
+    Returns 422 if year/month are missing or out of range (handled by FastAPI
+    for missing, explicit check for range).
+    """
+    if not (1 <= month <= 12):
+        raise HTTPException(422, "month must be 1-12")
+    if year < 2000 or year > 2100:
+        raise HTTPException(422, "year out of range")
+
+    async with async_session() as session:
+        result = await session.execute(select(User).where(User.id == user_id))
+        user = result.scalar_one_or_none()
+
+    if user is None or not user.is_audited:
+        raise HTTPException(404, "User not found or not audited")
+
+    audit = await compute_month_audit(async_session, user_id, year, month)
+    return UserDetailAudit(
+        user_id=user.id,
+        user_email=user.email,
+        user_name=user.name,
+        expected_days=audit.expected_days,
+        reported_days=audit.reported_days,
+        faltas=audit.faltas,
+        falta_dates=audit.falta_dates,
+    )
 
 
 @router.post("/run-reminders")
@@ -190,10 +271,22 @@ async def add_allowed_email(
 @router.delete("/allowed-emails/{email}")
 async def delete_allowed_email(
     email: str,
-    _admin: User = Depends(require_admin),
+    admin: User = Depends(require_admin),
 ):
-    """Revoke an email. 404 if not found. Matches by normalized email."""
+    """Revoke an email. 404 if not found. Matches by normalized email.
+
+    Guards (defense in depth, mirrors the frontend's disabled button):
+    - Seed administrators can never be removed (they back the .env config).
+    - The caller cannot remove their own email (would lock out a non-seed
+      admin on next login, since can_login only auto-admits seed emails).
+    """
     email_n = email.strip().lower()
+
+    if email_n in _admin_seed():
+        raise HTTPException(400, "Cannot remove a seed administrator")
+    if email_n == admin.email.strip().lower():
+        raise HTTPException(400, "You cannot remove your own access email")
+
     async with async_session() as session:
         row = await session.scalar(
             select(AllowedEmail).where(AllowedEmail.email == email_n)
