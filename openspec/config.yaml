@@ -1,0 +1,61 @@
+# openspec/config.yaml — Turbolog SDD configuration
+# Detected: 2026-06-25
+
+schema: spec-driven
+
+context: |
+  Monorepo: FastAPI (Python 3.12+) + SvelteKit SPA (Svelte 5, TypeScript)
+  Backend: SQLAlchemy 2.0 async + PostgreSQL, Alembic, httpx, python-jose, APScheduler
+  Frontend: adapter-static, no SSR, runes-mode forced, CSS scoped (no Tailwind)
+  Package managers: uv (backend), npm (frontend)
+  Docker: multi-stage (Node 22 + Python 3.12), FastAPI serves static build
+  Architecture: routers/services/models, dependency injection via FastAPI Depends, Protocol-based notifiers
+
+strict_tdd: true
+
+testing:
+  backend:
+    runner: "uv run pytest -q"
+    framework: pytest + pytest-asyncio
+    asyncio_mode: auto
+    test_dir: backend/tests
+    test_files: 16
+    harness: in-memory SQLite per test (Base.metadata.create_all), session factory override, dependency_overrides
+    coverage: false
+  frontend:
+    runner: null
+    framework: null
+    type_check: "npm run check (svelte-check)"
+    test_files: 0
+    coverage: false
+
+rules:
+  proposal:
+    - Include rollback plan for risky changes
+    - Consider both backend and frontend impact in monorepo changes
+  specs:
+    - Use Given/When/Then for scenarios
+    - Use RFC 2119 keywords (MUST, SHALL, SHOULD, MAY)
+    - Specify which layer (backend/frontend/infra) each requirement targets
+  design:
+    - Include sequence diagrams for complex flows
+    - Document architecture decisions with rationale
+    - Follow existing routers/services/models separation
+  tasks:
+    - Group by phase, use hierarchical numbering
+    - Keep tasks completable in one session
+    - Mark backend vs frontend tasks explicitly
+  apply:
+    - Follow existing code patterns (routers open async_session directly, dependency_overrides in tests)
+    - Strict TDD: RED-GREEN-REFACTOR for backend changes
+    - UI strings in spanish neutral (tú, never voseo)
+    tdd: true
+    test_command: "uv run pytest -q"
+  verify:
+    test_command: "uv run pytest -q"
+    build_command: "cd frontend && npm run build"
+    type_check_command: "cd frontend && npm run check"
+    coverage_threshold: 0
+  archive:
+    - Warn before merging destructive deltas
+    - Sync delta specs into main specs

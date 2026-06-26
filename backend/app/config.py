@@ -42,8 +42,13 @@ class Settings(BaseSettings):
     REMINDER_TIME: str = "17:30"  # "HH:MM" 24h, dias habiles
     AUDIT_TIMEZONE: str = "America/Argentina/Buenos_Aires"  # tz del cron y de "today"
     ADMIN_EMAILS: str = ""  # seed de super-admins (bootstrap, inmutable via API)
-    NOTIFIER_MODE: str = "log"  # "log" ahora; "smtp" futuro
+    NOTIFIER_MODE: str = "log"  # "log" | "telegram"
     ENABLE_SCHEDULER: bool = True  # true en contenedor scheduler; false en web
+
+    # Telegram
+    TELEGRAM_BOT_TOKEN: str = ""  # vacío deshabilita el bot
+    TELEGRAM_BOT_USERNAME: str = "TurbologBot"  # para deep link en frontend
+    TELEGRAM_CODE_TTL_SECONDS: int = 300  # 5 min para verificar código
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 

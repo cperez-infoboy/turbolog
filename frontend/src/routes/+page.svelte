@@ -12,7 +12,6 @@
 	import { ApiError } from '$lib/api/client';
 	import TaskList from '$lib/components/TaskList.svelte';
 	import Button from '$lib/components/Button.svelte';
-	import GlassPanel from '$lib/components/GlassPanel.svelte';
 	import ComplianceGauge from '$lib/components/ComplianceGauge.svelte';
 
 	const auth = getAuthState();
@@ -40,6 +39,7 @@
 	let complianceExpected = $state(0);
 	let complianceLoaded = $state(false);
 	let complianceError = $state(false);
+	let sidebarOpen = $state(true);
 
 	function todayString(): string {
 		return new Date().toISOString().split('T')[0];
@@ -187,89 +187,106 @@
 	<title>Turbolog — Panel</title>
 </svelte:head>
 
-<div class="dashboard">
-	<div class="date-bar">
-		<label for="report-date">Fecha</label>
-		<input id="report-date" type="date" bind:value={date} onchange={loadReports} />
-		<Button
-			variant="cta"
-			onclick={handleFinalize}
-			disabled={finalized || missingStatusTasks.length > 0 || finalizing || tasks.loading}
-			loading={finalizing}
-		>
-			{finalizeButtonLabel}
-		</Button>
+<div class="dashboard-layout" style="	padding-right: {auth.isAudited && complianceLoaded ? (sidebarOpen ? '230px' : '24px') : '5%'}">
+	<div class="dashboard-main">
+		<div class="date-bar">
+			<label for="report-date">Fecha</label>
+			<input id="report-date" type="date" bind:value={date} onchange={loadReports} />
+			<Button
+				variant="cta"
+				onclick={handleFinalize}
+				disabled={finalized || missingStatusTasks.length > 0 || finalizing || tasks.loading}
+				loading={finalizing}
+			>
+				{finalizeButtonLabel}
+			</Button>
+		</div>
+
+		{#if missingStatusTasks.length > 0}
+			<p class="finalize-msg warning">
+				Falta el status de: {missingStatusTasks
+					.map((t) => `${t.jira_key} — ${t.summary}`)
+					.join('; ')}.
+			</p>
+		{/if}
+		{#if finalizeMissing.length > 0}
+			<p class="finalize-msg warning">
+				El servidor rechazó el cierre. Falta el status de: {finalizeMissing
+					.map((m) => `${m.task_key}${m.task_summary ? ` — ${m.task_summary}` : ''}`)
+					.join('; ')}.
+			</p>
+		{/if}
+
+		{#if finalizeSuccess}
+			<p class="finalize-msg success">Día cerrado. Los statuses se publicaron en JIRA.</p>
+		{/if}
+		{#if finalizeError}
+			<p class="finalize-msg error">{finalizeError}</p>
+		{/if}
+		{#if loadError}
+			<p class="finalize-msg error">{loadError}</p>
+		{/if}
+
+		{#if telegramLinked === false}
+			<a href="/ajustes" class="telegram-banner">
+				📋 No tienes Telegram configurado. Los recordatorios se envían por este canal.
+				<span class="telegram-banner-link">Configurar notificaciones →</span>
+			</a>
+		{/if}
+
+		<TaskList
+			tasks={tasks.tasks}
+			selectedTaskId={tasks.selectedTaskId}
+			{reportsByTask}
+			{date}
+			{finalized}
+			loading={tasks.loading}
+			onSelectTask={handleSelectTask}
+			onReportSaved={handleReportSaved}
+		/>
 	</div>
 
-	{#if missingStatusTasks.length > 0}
-		<p class="finalize-msg warning">
-			Falta el status de: {missingStatusTasks
-				.map((t) => `${t.jira_key} — ${t.summary}`)
-				.join('; ')}.
-		</p>
-	{/if}
-	{#if finalizeMissing.length > 0}
-		<p class="finalize-msg warning">
-			El servidor rechazó el cierre. Falta el status de: {finalizeMissing
-				.map((m) => `${m.task_key}${m.task_summary ? ` — ${m.task_summary}` : ''}`)
-				.join('; ')}.
-		</p>
-	{/if}
-
-	{#if finalizeSuccess}
-		<p class="finalize-msg success">Día cerrado. Los statuses se publicaron en JIRA.</p>
-	{/if}
-	{#if finalizeError}
-		<p class="finalize-msg error">{finalizeError}</p>
-	{/if}
-	{#if loadError}
-		<p class="finalize-msg error">{loadError}</p>
-	{/if}
-
-	{#if telegramLinked === false}
-		<a href="/ajustes" class="telegram-banner">
-			📋 No tienes Telegram configurado. Los recordatorios se envían por este canal.
-			<span class="telegram-banner-link">Configurar notificaciones →</span>
-		</a>
-	{/if}
-
 	{#if auth.isAudited && complianceLoaded}
-		<GlassPanel padding="1.2rem" class="compliance-card">
-			<div class="compliance-content">
-				<span class="compliance-title">Tu cumplimiento</span>
-				<ComplianceGauge
-					reported={complianceReported}
-					expected={complianceExpected}
-					size={80}
-					strokeWidth={7}
-				/>
-			</div>
-		</GlassPanel>
-	{:else if auth.isAudited && complianceError}
-		<p class="finalize-msg error">No se pudo cargar tu resumen de cumplimiento.</p>
+		<aside class="sidebar" class:collapsed={!sidebarOpen}>
+			<button
+				class="sidebar-toggle"
+				onclick={() => (sidebarOpen = !sidebarOpen)}
+				aria-label={sidebarOpen ? 'Colapsar panel' : 'Expandir panel'}
+				title={sidebarOpen ? 'Colapsar' : 'Expandir'}
+			>
+				<span class="sidebar-toggle-icon">{sidebarOpen ? '▶' : '◀'}</span>
+			</button>
+			{#if sidebarOpen}
+				<div class="sidebar-content">
+					<span class="sidebar-title">Tu cumplimiento</span>
+					<ComplianceGauge
+						reported={complianceReported}
+						expected={complianceExpected}
+						size={120}
+						strokeWidth={10}
+					/>
+				</div>
+			{/if}
+		</aside>
 	{/if}
-
-	<TaskList
-		tasks={tasks.tasks}
-		selectedTaskId={tasks.selectedTaskId}
-		{reportsByTask}
-		{date}
-		{finalized}
-		loading={tasks.loading}
-		onSelectTask={handleSelectTask}
-		onReportSaved={handleReportSaved}
-	/>
 </div>
 
 <style>
-	.dashboard {
+	.dashboard-layout {
+		display: flex;
+		gap: 1.5rem;
+		padding: 6rem 5% 2rem;
+		max-width: 1100px;
+		margin: 0 auto;
+		min-height: 100vh;
+	}
+
+	.dashboard-main {
+		flex: 1;
 		display: flex;
 		flex-direction: column;
 		gap: 1.5rem;
-		padding: 6rem 5% 2rem;
-		max-width: 800px;
-		margin: 0 auto;
-		min-height: 100vh;
+		min-width: 0;
 	}
 
 	.date-bar {
@@ -306,6 +323,7 @@
 
 	.date-bar :global(.btn) {
 		margin-left: auto;
+		flex-shrink: 0;
 	}
 
 	.finalize-msg {
@@ -334,12 +352,6 @@
 		color: var(--neon-cyan);
 		background: var(--glass-bg);
 		border-color: var(--glass-border-hover);
-	}
-
-	@media (max-width: 900px) {
-		.dashboard {
-			padding-top: 5rem;
-		}
 	}
 
 	.telegram-banner {
@@ -372,22 +384,85 @@
 		white-space: nowrap;
 	}
 
-	:global(.compliance-card) {
-		border-color: rgba(0, 255, 255, 0.2);
+	/* Sidebar — full-height drawer */
+	.sidebar {
+		position: fixed;
+		top: 0;
+		right: 0;
+		height: 100vh;
+		width: 220px;
+		background: rgba(10, 10, 20, 0.95);
+		border-left: 1px solid var(--glass-border);
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		gap: 1.5rem;
+		padding: 5rem 1rem 2rem;
+		z-index: 50;
+		transition: width 0.25s ease;
+		overflow: hidden;
 	}
 
-	.compliance-content {
+	.sidebar.collapsed {
+		width: 16px;
+		padding: 5rem 0 2rem;
+	}
+
+	.sidebar-toggle {
+		position: absolute;
+		left: 0;
+		top: 0;
+		width: 16px;
+		height: 100%;
+		background: rgba(255, 255, 255, 0.03);
+		border: none;
+		border-right: 1px solid var(--glass-border);
+		cursor: pointer;
+		color: var(--text-secondary);
 		display: flex;
 		align-items: center;
-		justify-content: space-between;
-		gap: 1rem;
+		justify-content: center;
+		transition:
+			color var(--transition-speed) ease,
+			background var(--transition-speed) ease;
+		z-index: 2;
 	}
 
-	.compliance-title {
+	.sidebar-toggle:hover {
+		color: var(--neon-cyan);
+		background: rgba(0, 255, 255, 0.05);
+	}
+
+	.sidebar-toggle-icon {
+		font-size: 0.6rem;
+		pointer-events: none;
+	}
+
+	.sidebar-content {
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		gap: 1rem;
+		padding-top: 0.5rem;
+	}
+
+	.sidebar-title {
 		font-family: var(--font-heading);
-		font-size: 1rem;
+		font-size: 0.75rem;
 		font-weight: 700;
-		color: var(--text-primary);
-		letter-spacing: 0.05em;
+		color: var(--text-secondary);
+		text-transform: uppercase;
+		letter-spacing: 0.08em;
+		text-align: center;
+	}
+
+	@media (max-width: 1100px) {
+		.dashboard-layout {
+			padding-top: 5rem;
+		}
+
+		.sidebar {
+			display: none;
+		}
 	}
 </style>

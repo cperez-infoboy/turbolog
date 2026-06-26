@@ -249,10 +249,10 @@
 				{#if tasksStore.taskFilter === 'in-progress'}
 					<p>No hay tareas en curso.</p>
 					<p class="hint">
-						Revisá "Por hacer"{todoCount > 0 ? ` (${todoCount} pendientes)` : ''}.
+						Revisa "Por hacer"{todoCount > 0 ? ` (${todoCount} pendientes)` : ''}.
 					</p>
 				{:else if tasksStore.taskFilter === 'todo'}
-					<p>No tenés tareas por hacer.</p>
+					<p>No tienes tareas por hacer.</p>
 				{:else}
 					<p>No hay tareas para mostrar.</p>
 				{/if}

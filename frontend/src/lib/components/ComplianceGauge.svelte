@@ -4,9 +4,10 @@
 		expected: number;
 		size?: number;
 		strokeWidth?: number;
+		showLabel?: boolean;
 	}
 
-	let { reported, expected, size = 120, strokeWidth = 10 }: Props = $props();
+	let { reported, expected, size = 120, strokeWidth = 10, showLabel = true }: Props = $props();
 
 	const radius = $derived((size - strokeWidth) / 2);
 	const circumference = $derived(2 * Math.PI * radius);
@@ -22,6 +23,7 @@
 
 	const center = $derived(size / 2);
 	const hasData = $derived(expected > 0);
+	const fontSize = $derived(Math.max(size * 0.2, 7));
 </script>
 
 <div class="gauge-wrapper">
@@ -52,11 +54,12 @@
 			text-anchor="middle"
 			dominant-baseline="central"
 			class="gauge-text"
+			font-size={fontSize}
 		>
 			{hasData ? `${percentage}%` : 'Sin datos'}
 		</text>
 	</svg>
-	{#if hasData}
+	{#if showLabel && hasData}
 		<p class="gauge-label">{reported} de {expected} días</p>
 	{/if}
 </div>
@@ -75,7 +78,6 @@
 
 	.gauge-text {
 		font-family: var(--font-heading);
-		font-size: 1.2rem;
 		font-weight: 700;
 		fill: var(--text-primary);
 	}

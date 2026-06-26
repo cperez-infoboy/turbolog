@@ -1,17 +1,85 @@
+import hashlib
 import os
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from sqlalchemy import select
 
+from app.config import settings
+from app.models.allowed_email import AllowedEmail
 from app.routers.auth import router as auth_router
 from app.routers.audit import router as audit_router
 from app.routers.jira import router as jira_router
 from app.routers.status import router as status_router
+from app.routers.telegram import router as telegram_router
+from app.services.telegram_bot import TelegramBotService
+from app.services.telegram_verification import VerificationStore
 
-app = FastAPI(title="Turbolog", version="0.1.0")
+# Shared verification store (used by router and bot).
+_verification = VerificationStore(ttl_seconds=settings.TELEGRAM_CODE_TTL_SECONDS)
+
+# Inject the store into the telegram router module.
+from app.routers import telegram as _tg_router_module
+_tg_router_module._verification_store = _verification
+
+_bot_service: TelegramBotService | None = None
+
+
+async def _seed_admin_allowed_emails() -> None:
+    """Ensure every ADMIN_EMAILS entry exists in allowed_emails.
+
+    On a fresh database the backfill migration has no users to copy from, so
+    seed emails are absent from the allow-list.  This runs once at startup and
+    is idempotent (skips existing rows).
+    """
+    seed = {e.strip().lower() for e in settings.ADMIN_EMAILS.split(",") if e.strip()}
+    if not seed:
+        return
+    from app.database import async_session as _session_factory
+
+    async with _session_factory() as session:
+        existing = (
+            await session.execute(
+                select(AllowedEmail.email).where(
+                    AllowedEmail.email.in_(list(seed))
+                )
+            )
+        ).scalars().all()
+        existing_set = {e.lower() for e in existing}
+        now = datetime.now(timezone.utc).isoformat()
+        for email in seed - existing_set:
+            session.add(AllowedEmail(
+                id=hashlib.md5(email.encode()).hexdigest(),
+                email=email,
+                created_at=now,
+            ))
+        await session.commit()
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
+    global _bot_service
+    await _seed_admin_allowed_emails()
+    if settings.TELEGRAM_BOT_TOKEN:
+        from app.database import async_session as _session_factory
+        _bot_service = TelegramBotService(
+            bot_token=settings.TELEGRAM_BOT_TOKEN,
+            session_factory=_session_factory,
+            verification=_verification,
+        )
+        _bot_service.start()
+    yield
+    if _bot_service is not None:
+        await _bot_service.stop()
+
+
+app = FastAPI(title="Turbolog", version="0.1.0", lifespan=lifespan)
 
 # CORS middleware for development (disabled in production via same-origin)
 app.add_middleware(
@@ -27,6 +95,7 @@ app.include_router(auth_router)
 app.include_router(audit_router)
 app.include_router(jira_router)
 app.include_router(status_router)
+app.include_router(telegram_router)
 
 
 @app.get("/api/health")

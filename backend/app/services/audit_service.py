@@ -27,6 +27,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.models.audit_period import AuditPeriod
 from app.models.daily_closure import DailyClosure
 from app.models.user import User
 
@@ -160,6 +161,58 @@ async def fetch_reported_dates(
     return reported
 
 
+async def fetch_audit_periods(
+    session_factory: SessionFactory,
+    user_id: str,
+    start: date,
+    end: date,
+) -> list[tuple[date, date]]:
+    """Return audit periods overlapping ``[start, end]`` for ``user_id``.
+
+    Each tuple is ``(period_start, period_end)`` where ``period_end`` is
+    ``today`` if the period is still open (``ended_at IS NULL``).
+    """
+    start_str = start.isoformat()
+    # A period overlaps [start, end] if it started before end+1 AND
+    # (it hasn't ended OR it ended on or after start).
+    end_plus1 = date.fromordinal(end.toordinal() + 1).isoformat()
+
+    async with session_factory() as session:
+        result = await session.execute(
+            select(AuditPeriod).where(
+                AuditPeriod.user_id == user_id,
+                AuditPeriod.started_at < end_plus1,
+                (AuditPeriod.ended_at.is_(None)) | (AuditPeriod.ended_at >= start_str),
+            )
+        )
+        rows = result.scalars().all()
+
+    periods: list[tuple[date, date]] = []
+    for row in rows:
+        try:
+            p_start = date.fromisoformat(row.started_at[:10])
+        except (ValueError, TypeError):
+            logger.warning(
+                "Malformed started_at %r for audit_period %s skipped",
+                row.started_at, row.id,
+            )
+            continue
+        if row.ended_at is not None:
+            try:
+                p_end = date.fromisoformat(row.ended_at[:10])
+            except (ValueError, TypeError):
+                logger.warning(
+                    "Malformed ended_at %r for audit_period %s skipped",
+                    row.ended_at, row.id,
+                )
+                continue
+        else:
+            # Open period — extends through today (capped by caller).
+            p_end = end
+        periods.append((p_start, p_end))
+    return periods
+
+
 # --------------------------------------------------------------------------- #
 # Audit computations
 # --------------------------------------------------------------------------- #
@@ -172,15 +225,35 @@ async def compute_month_audit(
     month: int,
     *,
     today: date | None = None,
+    audit_periods: list[tuple[date, date]] | None = None,
 ) -> MonthAudit:
-    """Compute the audit for a single user in a single month."""
+    """Compute the audit for a single user in a single month.
+
+    If *audit_periods* is provided (list of ``(period_start, period_end)``),
+    expected weekdays are counted only within those ranges.  If ``None``,
+    periods are fetched from the DB so callers like the reminder job and
+    status summary work without changes.
+    """
     if today is None:
         today = _today_in_tz()
 
-    start, end = _month_bounds(year, month)
-    expected = expected_weekdays(start, end, today)
-    expected_set = set(expected)
-    reported = await fetch_reported_dates(session_factory, user_id, start, end)
+    month_start, month_end = _month_bounds(year, month)
+
+    # Fetch periods if the caller didn't provide them.
+    if audit_periods is None:
+        audit_periods = await fetch_audit_periods(
+            session_factory, user_id, month_start, month_end
+        )
+
+    # Collect expected weekdays across all active periods.
+    expected: list[date] = []
+    for p_start, p_end in audit_periods:
+        range_start = max(p_start, month_start)
+        range_end = min(p_end, month_end, today)
+        expected.extend(expected_weekdays(range_start, range_end, today))
+    expected = sorted(set(expected))
+
+    reported = await fetch_reported_dates(session_factory, user_id, month_start, month_end)
 
     reported_dates = sorted(d for d in expected if d in reported)
     falta_dates = sorted(d for d in expected if d not in reported)
@@ -224,9 +297,15 @@ async def compute_audit_for_all_users(
     *,
     today: date | None = None,
 ) -> list[UserMonthAudit]:
-    """Compute the monthly audit for every user with ``is_audited == True``."""
+    """Compute the monthly audit for every user with ``is_audited == True``.
+
+    Pre-fetches all audit periods for the month in a single query (avoids
+    N+1), then passes per-user periods to ``compute_month_audit``.
+    """
     if today is None:
         today = _today_in_tz()
+
+    month_start, month_end = _month_bounds(year, month)
 
     async with session_factory() as session:
         result = await session.execute(
@@ -234,10 +313,43 @@ async def compute_audit_for_all_users(
         )
         users = result.scalars().all()
 
+    # Pre-fetch all audit periods for the relevant month in one query.
+    periods_by_user: dict[str, list[tuple[date, date]]] = {}
+    if users:
+        user_ids = [u.id for u in users]
+        async with session_factory() as session:
+            result = await session.execute(
+                select(AuditPeriod).where(
+                    AuditPeriod.user_id.in_(user_ids),
+                    AuditPeriod.started_at < date.fromordinal(
+                        month_end.toordinal() + 1
+                    ).isoformat(),
+                    (AuditPeriod.ended_at.is_(None))
+                    | (AuditPeriod.ended_at >= month_start.isoformat()),
+                )
+            )
+            rows = result.scalars().all()
+
+        for row in rows:
+            try:
+                p_start = date.fromisoformat(row.started_at[:10])
+            except (ValueError, TypeError):
+                continue
+            if row.ended_at is not None:
+                try:
+                    p_end = date.fromisoformat(row.ended_at[:10])
+                except (ValueError, TypeError):
+                    continue
+            else:
+                p_end = month_end
+            periods_by_user.setdefault(row.user_id, []).append((p_start, p_end))
+
     entries: list[UserMonthAudit] = []
     for user in users:
+        periods = periods_by_user.get(user.id, [])
         audit = await compute_month_audit(
-            session_factory, user.id, year, month, today=today
+            session_factory, user.id, year, month, today=today,
+            audit_periods=periods,
         )
         entries.append(
             UserMonthAudit(

@@ -27,6 +27,7 @@
 
 		<div class="nav-links">
 			<a href="/" class="nav-link">Informar status</a>
+			<a href="/ajustes" class="nav-link">Ajustes</a>
 			{#if user?.is_admin}
 				<a href="/administracion" class="nav-link">Administración</a>
 				<a href="/auditoria" class="nav-link">Auditoría</a>

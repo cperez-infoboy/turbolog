@@ -231,6 +231,7 @@ async def register(body: dict):
             email=email,
             name=name,
             picture=picture,
+            is_audited=True,
             # Admin is NEVER granted here: the email comes from the client body
             # and is untrusted. Seed admins are granted in google_callback,
             # where the email is Google-verified.

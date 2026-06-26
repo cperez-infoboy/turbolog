@@ -37,6 +37,11 @@
 	// the next interaction keeps the UI calm.
 	let userErrors = $state<Record<string, string>>({});
 
+	// Per-user in-flight PATCH guard. A second toggle for the SAME user (either
+	// Auditado or Admin) is ignored until the first PATCH resolves. Prevents the
+	// optimistic-flip + opposite-PATCH race that left is_audited inverted.
+	let userSaving = $state<Record<string, boolean>>({});
+
 	// Non-seed admins: the set that can actually be demoted. Used to lock the
 	// last remaining one so the panel can never strip every manageable admin.
 	const lastNonSeedAdmins = $derived(
@@ -109,11 +114,20 @@
 	}
 
 	async function handleToggle(user: AuditUser, field: 'is_admin' | 'is_audited') {
+		// Busy-guard: ignore a second click while a PATCH for this user is in flight.
+		// The optimistic flip already happened on the first click; a second click
+		// would read the flipped value, flip it back, and send an opposite PATCH.
+		if (userSaving[user.id]) return;
+		userSaving = { ...userSaving, [user.id]: true };
+
 		// Optimistic flip: mutate local state immediately, revert on failure.
 		const prev = user[field];
 		const next = !prev;
 		const idx = users.findIndex((u) => u.id === user.id);
-		if (idx === -1) return;
+		if (idx === -1) {
+			userSaving = { ...userSaving, [user.id]: false };
+			return;
+		}
 
 		users[idx] = { ...users[idx], [field]: next };
 		userErrors[user.id] = '';
@@ -129,6 +143,8 @@
 			} else {
 				userErrors[user.id] = errorMessage(err);
 			}
+		} finally {
+			userSaving = { ...userSaving, [user.id]: false };
 		}
 	}
 
@@ -243,25 +259,30 @@
 								{/if}
 							</div>
 							<div class="toggles">
-								<label class="toggle">
+								<label
+									class="toggle"
+									class:disabled={userSaving[user.id]}
+									title={userSaving[user.id] ? 'Guardando…' : ''}
+								>
 									<span class="toggle-label">Auditado</span>
 									<input
 										type="checkbox"
 										checked={user.is_audited}
+										disabled={userSaving[user.id]}
 										onchange={() => handleToggle(user, 'is_audited')}
 									/>
 									<span class="toggle-track" class:on={user.is_audited}></span>
 								</label>
 								<label
 									class="toggle"
-									class:disabled={adminToggleLocked(user).disabled}
+									class:disabled={adminToggleLocked(user).disabled || userSaving[user.id]}
 									title={adminToggleLocked(user).title}
 								>
 									<span class="toggle-label">Admin</span>
 									<input
 										type="checkbox"
 										checked={user.is_admin}
-										disabled={adminToggleLocked(user).disabled}
+										disabled={adminToggleLocked(user).disabled || userSaving[user.id]}
 										onchange={() => handleToggle(user, 'is_admin')}
 									/>
 									<span class="toggle-track" class:on={user.is_admin}></span>
@@ -331,6 +352,7 @@
 		display: flex;
 		gap: 0.75rem;
 		flex-wrap: wrap;
+		margin-bottom: 1rem;
 	}
 
 	.email-form input {
@@ -452,8 +474,8 @@
 		width: 38px;
 		height: 20px;
 		border-radius: 20px;
-		background: rgba(255, 255, 255, 0.12);
-		border: 1px solid var(--glass-border);
+		background: rgba(255, 255, 255, 0.06);
+		border: 1px solid rgba(255, 255, 255, 0.15);
 		transition:
 			background var(--transition-speed) ease,
 			border-color var(--transition-speed) ease,
@@ -468,7 +490,7 @@
 		width: 14px;
 		height: 14px;
 		border-radius: 50%;
-		background: var(--text-secondary);
+		background: rgba(255, 255, 255, 0.3);
 		transition:
 			transform var(--transition-speed) ease,
 			background var(--transition-speed) ease;

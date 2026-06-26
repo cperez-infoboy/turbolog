@@ -11,6 +11,7 @@ from datetime import date
 
 import pytest
 
+from app.models.audit_period import AuditPeriod
 from app.models.daily_closure import DailyClosure
 from app.models.user import User
 
@@ -23,6 +24,20 @@ async def _seed_closure(session_factory, user_id, report_date_str):
                 user_id=user_id,
                 report_date=report_date_str,
                 finalized_at="2026-06-01T00:00:00+00:00",
+            )
+        )
+        await s.commit()
+
+
+async def _seed_period(session_factory, user_id, started_at: str, ended_at: str | None = None):
+    """Insert an AuditPeriod row."""
+    async with session_factory() as s:
+        s.add(
+            AuditPeriod(
+                id=secrets.token_hex(16),
+                user_id=user_id,
+                started_at=started_at,
+                ended_at=ended_at,
             )
         )
         await s.commit()
@@ -68,6 +83,8 @@ class TestSummaryEndpoint:
 
         monkeypatch.setattr(audit_service_mod, "_today_in_tz", lambda tz=None: date(2026, 6, 5))
 
+        # Seed an audit period covering the full month for test_user.
+        await _seed_period(session_factory, test_user.id, "2026-06-01T00:00:00+00:00")
         # Seed a closure for test_user (the authenticated user).
         await _seed_closure(session_factory, test_user.id, "2026-06-02")
         # Seed a closure for ANOTHER user (must NOT affect test_user's counts).

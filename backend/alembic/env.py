@@ -8,7 +8,7 @@ from alembic import context
 
 # Import all models so autogenerate can detect them
 from app.database import Base
-from app.models import AllowedEmail, DailyClosure, StatusReport, Task, User  # noqa: F401
+from app.models import AllowedEmail, AuditPeriod, DailyClosure, StatusReport, Task, User  # noqa: F401
 from app.config import settings
 
 # this is the Alembic Config object, which provides

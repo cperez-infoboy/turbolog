@@ -8,7 +8,7 @@ from datetime import date
 
 import pytest
 
-from app.services.notifier import LogNotifier, build_notifier
+from app.services.notifier import LogNotifier, TelegramNotifier, build_notifier
 
 
 class _FakeSummary:
@@ -64,6 +64,22 @@ class TestBuildNotifier:
     def test_unknown_mode_falls_back_to_log(self):
         class _S:
             NOTIFIER_MODE = "smtp"
+
+        n = build_notifier(_S())
+        assert isinstance(n, LogNotifier)
+
+    def test_telegram_mode_returns_telegram_notifier(self):
+        class _S:
+            NOTIFIER_MODE = "telegram"
+            TELEGRAM_BOT_TOKEN = "fake-token"
+
+        n = build_notifier(_S())
+        assert isinstance(n, TelegramNotifier)
+
+    def test_telegram_mode_empty_token_falls_back_to_log(self):
+        class _S:
+            NOTIFIER_MODE = "telegram"
+            TELEGRAM_BOT_TOKEN = ""
 
         n = build_notifier(_S())
         assert isinstance(n, LogNotifier)

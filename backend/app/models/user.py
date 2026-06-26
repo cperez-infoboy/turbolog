@@ -28,10 +28,16 @@ class User(Base):
     is_audited: Mapped[bool] = mapped_column(
         Boolean, default=False, nullable=False, server_default="0"
     )
+    telegram_chat_id: Mapped[str | None] = mapped_column(
+        String, nullable=True, default=None
+    )
 
     status_reports = relationship(
         "StatusReport", back_populates="user", lazy="selectin"
     )
     daily_closures = relationship(
         "DailyClosure", back_populates="user", lazy="selectin"
+    )
+    audit_periods = relationship(
+        "AuditPeriod", back_populates="user", lazy="selectin"
     )
