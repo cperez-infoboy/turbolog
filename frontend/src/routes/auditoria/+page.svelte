@@ -2,11 +2,12 @@
 	import { onMount } from 'svelte';
 	import { SvelteSet } from 'svelte/reactivity';
 	import { getAuthState } from '$lib/stores/auth.svelte';
-	import { getMonthlyAudit } from '$lib/api/audit';
-	import type { UserMonthAudit } from '$lib/api/audit';
+	import { getMonthlyAudit, getAuditUsers, getUserMonthlyAudit } from '$lib/api/audit';
+	import type { UserMonthAudit, UserDetailAudit, AuditUser } from '$lib/api/audit';
 	import GlassPanel from '$lib/components/GlassPanel.svelte';
 	import LoadingSpinner from '$lib/components/LoadingSpinner.svelte';
 	import Button from '$lib/components/Button.svelte';
+	import ComplianceGauge from '$lib/components/ComplianceGauge.svelte';
 
 	const auth = getAuthState();
 
@@ -24,15 +25,38 @@
 	// Expanded falta_dates panels keyed by user_id.
 	let expanded = $state<SvelteSet<string>>(new SvelteSet());
 
+	// User selector state.
+	let auditedUsers = $state<AuditUser[]>([]);
+	let selectedUserId = $state<string>('');
+	let userDetail = $state<UserDetailAudit | null>(null);
+	let userDetailLoading = $state(false);
+	let userDetailError = $state<string | null>(null);
+
+	const selectedUser = $derived(
+		auditedUsers.find((u) => u.id === selectedUserId) ?? null
+	);
+
 	$effect(() => {
 		if (auth.authLoaded && !auth.isAdmin) {
 			window.location.href = '/';
 		}
 	});
 
-	onMount(() => {
-		loadAudit();
+	onMount(async () => {
+		await loadAuditedUsers();
+		await loadAudit();
 	});
+
+	async function loadAuditedUsers() {
+		try {
+			const allUsers = await getAuditUsers();
+			auditedUsers = allUsers
+				.filter((u) => u.is_audited)
+				.sort((a, b) => a.email.localeCompare(b.email));
+		} catch {
+			// Non-critical — dropdown will be empty.
+		}
+	}
 
 	async function loadAudit() {
 		const [yearStr, monthStr] = month.split('-');
@@ -51,9 +75,46 @@
 		}
 	}
 
+	async function loadUserDetail() {
+		if (!selectedUserId) {
+			userDetail = null;
+			userDetailError = null;
+			return;
+		}
+		const [yearStr, monthStr] = month.split('-');
+		const year = Number(yearStr);
+		const m = Number(monthStr);
+		if (!year || !m) return;
+		userDetailLoading = true;
+		userDetailError = null;
+		try {
+			userDetail = await getUserMonthlyAudit(selectedUserId, year, m);
+		} catch {
+			userDetailError = 'No se pudo cargar el detalle del usuario.';
+			userDetail = null;
+		} finally {
+			userDetailLoading = false;
+		}
+	}
+
 	function handleMonthChange() {
 		expanded = new SvelteSet();
-		loadAudit();
+		if (selectedUserId) {
+			loadUserDetail();
+		} else {
+			loadAudit();
+		}
+	}
+
+	function handleUserChange() {
+		expanded = new SvelteSet();
+		if (selectedUserId) {
+			loadUserDetail();
+		} else {
+			userDetail = null;
+			userDetailError = null;
+			loadAudit();
+		}
 	}
 
 	function toggleFaltas(userId: string) {
@@ -86,45 +147,63 @@
 	{#if auth.authLoaded && !auth.isAdmin}
 		<p class="msg">Redirigiendo...</p>
 	{:else}
-		<div class="month-bar">
-			<label for="audit-month">Mes</label>
-			<input
-				id="audit-month"
-				type="month"
-				bind:value={month}
-				onchange={handleMonthChange}
-			/>
+		<div class="controls-bar">
+			<div class="control-group">
+				<label for="audit-month">Mes</label>
+				<input
+					id="audit-month"
+					type="month"
+					bind:value={month}
+					onchange={handleMonthChange}
+				/>
+			</div>
+			<div class="control-group">
+				<label for="audit-user">Usuario</label>
+				<select id="audit-user" bind:value={selectedUserId} onchange={handleUserChange}>
+					<option value="">Todos los usuarios</option>
+					{#each auditedUsers as user (user.id)}
+						<option value={user.id}>{user.email}</option>
+					{/each}
+				</select>
+			</div>
 		</div>
 
-		{#if loading}
-			<LoadingSpinner />
-		{:else if error}
-			<p class="msg error">{error}</p>
-			<Button variant="secondary" onclick={loadAudit}>Reintentar</Button>
-		{:else if rows.length === 0}
-			<p class="empty">Sin datos para el mes seleccionado.</p>
-		{:else}
-			{#each rows as row (row.user_id)}
-				{@const hasFaltas = row.faltas > 0}
-				{@const isOpen = expanded.has(row.user_id)}
+		{#if selectedUserId}
+			<!-- Per-user detail view -->
+			{#if userDetailLoading}
+				<LoadingSpinner />
+			{:else if userDetailError}
+				<p class="msg error">{userDetailError}</p>
+				<Button variant="secondary" onclick={loadUserDetail}>Reintentar</Button>
+			{:else if userDetail}
+				{@const hasFaltas = userDetail.faltas > 0}
+				{@const isOpen = expanded.has(userDetail.user_id)}
+				{@const detailUserId = userDetail.user_id}
 				<GlassPanel padding="1.5rem" class={'audit-card' + (hasFaltas ? ' danger' : '')}>
 					<div class="audit-header">
 						<div class="audit-identity">
-							<span class="audit-email">{row.user_email}</span>
-							<span class="audit-stats">
-								<span class="stat">
-									Reportados: <strong>{row.reported_days}</strong> / {row.expected_days}
-								</span>
-								<span class="stat faltas faltas-{hasFaltas ? 'on' : 'off'}">
-									Faltas: <strong>{row.faltas}</strong>
-								</span>
-							</span>
+							<span class="audit-email">{userDetail.user_email}</span>
+							<span class="audit-name">{userDetail.user_name}</span>
 						</div>
+						<ComplianceGauge
+							reported={userDetail.reported_days}
+							expected={userDetail.expected_days}
+							size={100}
+							strokeWidth={8}
+						/>
+					</div>
+					<div class="audit-detail-stats">
+						<span class="stat">
+							Reportados: <strong>{userDetail.reported_days}</strong> / {userDetail.expected_days}
+						</span>
+						<span class="stat faltas faltas-{hasFaltas ? 'on' : 'off'}">
+							Faltas: <strong>{userDetail.faltas}</strong>
+						</span>
 						{#if hasFaltas}
 							<button
 								type="button"
 								class="faltas-toggle"
-								onclick={() => toggleFaltas(row.user_id)}
+								onclick={() => toggleFaltas(detailUserId)}
 								aria-expanded={isOpen}
 							>
 								{isOpen ? 'Ocultar fechas' : 'Ver fechas'}
@@ -136,7 +215,7 @@
 						<div class="faltas-body" class:expanded={isOpen}>
 							<div class="faltas-inner">
 								<ul class="faltas-grid">
-									{#each row.falta_dates as date (date)}
+									{#each userDetail.falta_dates as date (date)}
 										<li class="falta-chip">{formatDate(date)}</li>
 									{/each}
 								</ul>
@@ -144,7 +223,59 @@
 						</div>
 					{/if}
 				</GlassPanel>
-			{/each}
+			{/if}
+		{:else}
+			<!-- All-users view (existing behavior) -->
+			{#if loading}
+				<LoadingSpinner />
+			{:else if error}
+				<p class="msg error">{error}</p>
+				<Button variant="secondary" onclick={loadAudit}>Reintentar</Button>
+			{:else if rows.length === 0}
+				<p class="empty">Sin datos para el mes seleccionado.</p>
+			{:else}
+				{#each rows as row (row.user_id)}
+					{@const hasFaltas = row.faltas > 0}
+					{@const isOpen = expanded.has(row.user_id)}
+					<GlassPanel padding="1.5rem" class={'audit-card' + (hasFaltas ? ' danger' : '')}>
+						<div class="audit-header">
+							<div class="audit-identity">
+								<span class="audit-email">{row.user_email}</span>
+								<span class="audit-stats">
+									<span class="stat">
+										Reportados: <strong>{row.reported_days}</strong> / {row.expected_days}
+									</span>
+									<span class="stat faltas faltas-{hasFaltas ? 'on' : 'off'}">
+										Faltas: <strong>{row.faltas}</strong>
+									</span>
+								</span>
+							</div>
+							{#if hasFaltas}
+								<button
+									type="button"
+									class="faltas-toggle"
+									onclick={() => toggleFaltas(row.user_id)}
+									aria-expanded={isOpen}
+								>
+									{isOpen ? 'Ocultar fechas' : 'Ver fechas'}
+								</button>
+							{/if}
+						</div>
+
+						{#if hasFaltas}
+							<div class="faltas-body" class:expanded={isOpen}>
+								<div class="faltas-inner">
+									<ul class="faltas-grid">
+										{#each row.falta_dates as date (date)}
+											<li class="falta-chip">{formatDate(date)}</li>
+										{/each}
+									</ul>
+								</div>
+							</div>
+						{/if}
+					</GlassPanel>
+				{/each}
+			{/if}
 		{/if}
 	{/if}
 </div>
@@ -165,14 +296,20 @@
 		letter-spacing: 0.05em;
 	}
 
-	.month-bar {
+	.controls-bar {
 		display: flex;
 		align-items: center;
 		gap: 1rem;
 		flex-wrap: wrap;
 	}
 
-	.month-bar label {
+	.control-group {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+	}
+
+	.control-group label {
 		font-family: var(--font-heading);
 		font-size: 0.85rem;
 		font-weight: 700;
@@ -181,7 +318,8 @@
 		letter-spacing: 0.1em;
 	}
 
-	.month-bar input {
+	.control-group input,
+	.control-group select {
 		background: rgba(0, 0, 0, 0.4);
 		border: 1px solid var(--glass-border);
 		border-radius: 8px;
@@ -193,8 +331,14 @@
 		transition: border-color var(--transition-speed) ease;
 	}
 
-	.month-bar input:focus {
+	.control-group input:focus,
+	.control-group select:focus {
 		border-color: var(--neon-cyan);
+	}
+
+	.control-group select {
+		cursor: pointer;
+		max-width: 280px;
 	}
 
 	.audit-header {
@@ -216,6 +360,23 @@
 		font-size: 1rem;
 		font-weight: 600;
 		color: var(--text-primary);
+	}
+
+	.audit-name {
+		font-family: var(--font-body);
+		font-size: 0.85rem;
+		color: var(--text-secondary);
+	}
+
+	.audit-detail-stats {
+		display: flex;
+		gap: 1rem;
+		flex-wrap: wrap;
+		align-items: center;
+		font-family: var(--font-body);
+		font-size: 0.85rem;
+		color: var(--text-secondary);
+		margin-top: 0.75rem;
 	}
 
 	.audit-stats {
