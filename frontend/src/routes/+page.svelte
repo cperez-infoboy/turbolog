@@ -7,10 +7,13 @@
 		selectTask
 	} from '$lib/stores/tasks.svelte';
 	import type { StatusReportWithSummary } from '$lib/api/status';
-	import { getReportsByDate, finalizeDay } from '$lib/api/status';
+	import { getReportsByDate, finalizeDay, getSummary } from '$lib/api/status';
+	import { getTelegramStatus } from '$lib/api/telegram';
 	import { ApiError } from '$lib/api/client';
 	import TaskList from '$lib/components/TaskList.svelte';
 	import Button from '$lib/components/Button.svelte';
+	import GlassPanel from '$lib/components/GlassPanel.svelte';
+	import ComplianceGauge from '$lib/components/ComplianceGauge.svelte';
 
 	const auth = getAuthState();
 	const tasks = getTasksState();
@@ -28,6 +31,16 @@
 	let finalizeMissing = $state<Array<{ task_key: string; task_summary?: string | null }>>([]);
 	let loadError = $state<string | null>(null);
 
+	// Telegram — solo necesitamos saber si está vinculado para el banner.
+	// null = aún no se consultó, boolean = estado conocido.
+	let telegramLinked = $state<boolean | null>(null);
+
+	// Compliance summary for audited users.
+	let complianceReported = $state(0);
+	let complianceExpected = $state(0);
+	let complianceLoaded = $state(false);
+	let complianceError = $state(false);
+
 	function todayString(): string {
 		return new Date().toISOString().split('T')[0];
 	}
@@ -35,6 +48,10 @@
 	onMount(async () => {
 		await fetchTasks();
 		await loadReports();
+		await loadTelegramStatus();
+		if (auth.isAudited) {
+			await loadCompliance();
+		}
 	});
 
 	async function loadReports() {
@@ -52,6 +69,27 @@
 			// the user write into a locked day. Preserve last-known lock state
 			// and surface the failure as a non-blocking notice.
 			loadError = 'No se pudieron cargar los statuses.';
+		}
+	}
+
+	async function loadTelegramStatus() {
+		try {
+			const status = await getTelegramStatus();
+			telegramLinked = status.linked;
+		} catch {
+			// Non-critical — Telegram may not be configured.
+		}
+	}
+
+	async function loadCompliance() {
+		try {
+			const summary = await getSummary();
+			complianceReported = summary.reported_days;
+			complianceExpected = summary.expected_days;
+			complianceLoaded = true;
+			complianceError = false;
+		} catch {
+			complianceError = true;
 		}
 	}
 
@@ -188,6 +226,29 @@
 		<p class="finalize-msg error">{loadError}</p>
 	{/if}
 
+	{#if telegramLinked === false}
+		<a href="/ajustes" class="telegram-banner">
+			📋 No tienes Telegram configurado. Los recordatorios se envían por este canal.
+			<span class="telegram-banner-link">Configurar notificaciones →</span>
+		</a>
+	{/if}
+
+	{#if auth.isAudited && complianceLoaded}
+		<GlassPanel padding="1.2rem" class="compliance-card">
+			<div class="compliance-content">
+				<span class="compliance-title">Tu cumplimiento</span>
+				<ComplianceGauge
+					reported={complianceReported}
+					expected={complianceExpected}
+					size={80}
+					strokeWidth={7}
+				/>
+			</div>
+		</GlassPanel>
+	{:else if auth.isAudited && complianceError}
+		<p class="finalize-msg error">No se pudo cargar tu resumen de cumplimiento.</p>
+	{/if}
+
 	<TaskList
 		tasks={tasks.tasks}
 		selectedTaskId={tasks.selectedTaskId}
@@ -279,5 +340,54 @@
 		.dashboard {
 			padding-top: 5rem;
 		}
+	}
+
+	.telegram-banner {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 1rem;
+		padding: 0.7rem 1.2rem;
+		background: var(--glass-bg);
+		border: 1px solid var(--glass-border);
+		border-radius: 8px;
+		font-family: var(--font-body);
+		font-size: 0.85rem;
+		color: var(--text-secondary);
+		text-decoration: none;
+		transition:
+			border-color var(--transition-speed) ease,
+			background var(--transition-speed) ease;
+		flex-wrap: wrap;
+	}
+
+	.telegram-banner:hover {
+		border-color: var(--glass-border-hover);
+		background: var(--glass-bg-hover);
+	}
+
+	.telegram-banner-link {
+		font-weight: 700;
+		color: var(--neon-cyan);
+		white-space: nowrap;
+	}
+
+	:global(.compliance-card) {
+		border-color: rgba(0, 255, 255, 0.2);
+	}
+
+	.compliance-content {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 1rem;
+	}
+
+	.compliance-title {
+		font-family: var(--font-heading);
+		font-size: 1rem;
+		font-weight: 700;
+		color: var(--text-primary);
+		letter-spacing: 0.05em;
 	}
 </style>

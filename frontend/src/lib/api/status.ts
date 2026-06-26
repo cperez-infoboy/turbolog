@@ -45,6 +45,14 @@ export interface FinalizeResult {
 	missing?: FinalizeMissing[];
 }
 
+export interface UserSummary {
+	month: string;
+	expected_days: number;
+	reported_days: number;
+	faltas: number;
+	falta_dates: string[];
+}
+
 export async function createReport(
 	taskKey: string,
 	date: string,
@@ -62,6 +70,10 @@ export async function getReportsByDate(date: string): Promise<DayReports> {
 
 export async function getTodayReports(): Promise<DayReports> {
 	return api<DayReports>('/api/status/today');
+}
+
+export async function getSummary(): Promise<UserSummary> {
+	return api<UserSummary>('/api/status/summary');
 }
 
 export async function updateReport(id: string, content: string): Promise<StatusReport> {
