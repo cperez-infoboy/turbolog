@@ -1,0 +1,293 @@
+# ============================================================================
+# Turbolog — Docker Swarm stack (TEMPLATE)
+# ============================================================================
+# This file is a TEMPLATE. CI substitutes the two placeholders BEFORE deploy
+# using an allow-listed envsubst (the EXCLUSIVE set it may touch):
+#
+#   IMAGE_TAG=<sha> CLOUDSQL_CONNECTION=<gcp:region:inst> \
+#     envsubst '${IMAGE_TAG} ${CLOUDSQL_CONNECTION}' \
+#     < docker-stack.yml.tmpl > docker-stack.yml
+#
+# then: gcloud compute scp docker-stack.yml <manager>:~/
+# then: docker stack deploy -c ~/docker-stack.yml turbolog
+#
+# A bare `envsubst` MUST NOT be used: it would over-substitute every ${VAR}
+# and silently empty unset ones. Only the two templated placeholders above are
+# substituted; everything else ships as literal values in this template.
+#
+# NOT defined in this stack (orchestrated by CI / Slice 3, NOT here):
+#   * the one-shot `turbolog-migrate` Swarm service:
+#       docker service create --name turbolog-migrate -e RUN_MIGRATIONS=false \
+#         --restart-condition=none --restart-max-attempts=0 \
+#         --secret database_url --network turbolog-net \
+#         <region>-docker.pkg.dev/dockerswarm-491114/turbolog/turbolog:<sha> \
+#         uv run alembic upgrade head
+#   * throwaway `docker run --rm --network turbolog-net` connectivity probes
+#     (overlay DNS `auth-proxy` and the 9090 health port resolve ONLY inside
+#     containers on turbolog-net; NEVER probe them from the manager VM host
+#     via getent/curl — the host cannot resolve overlay DNS).
+#
+# Secrets are EXTERNAL Docker Swarm secrets (see scripts/create-secrets.sh),
+# created once with a `_v1` suffix. The per-service `target:` maps each to the
+# pydantic FIELD name so /run/secrets/<field> resolves regardless of the
+# versioned source name. Rotation = create a new _vN secret, then:
+#   docker service update --secret-rm <field>_v1 \
+#     --secret-add source=<field>_vN,target=<field> turbolog_backend
+# (the `target=<field>` alias is MANDATORY; without it the field-named file
+#  vanishes and pydantic falls back to its insecure default.)
+#
+# Non-secret `environment:` values below are PLACEHOLDERS — the operator fills
+# the real values (client IDs, domain, timezone, ...) before first deploy and
+# they ride in the committed template (they are NOT secrets). See the runbook.
+# ============================================================================
+
+# ---------------------------------------------------------------------------
+# NOTE on the two `${...}` placeholders: they are the ONLY envsubst tokens and
+# appear in exactly two places below — backend/scheduler `image:` and the
+# auth-proxy positional connection arg. Do not add `${...}` elsewhere without
+# extending the envsubst allow-list in CI.
+# ---------------------------------------------------------------------------
+
+networks:
+  turbolog-net:
+    driver: overlay
+    attachable: true
+
+secrets:
+  # Versioned `_v1` Swarm secrets (external — created by scripts/create-secrets.sh).
+  # The per-service binding aliases each to its pydantic field name via target:.
+  database_url_v1:
+    external: true
+  google_client_secret_v1:
+    external: true
+  jwt_secret_v1:
+    external: true
+  jira_api_token_v1:
+    external: true
+  llm_api_key_v1:
+    external: true
+  telegram_bot_token_v1:
+    external: true
+  cloudsql_sa_key_v1:
+    external: true
+  cloudflare_token_v1:
+    external: true
+
+services:
+  # ── auth-proxy: shared Cloud SQL Auth Proxy on the overlay ───────────────
+  # DNS auth-proxy:5432 (TCP) consumed by backend + scheduler + the one-shot
+  # migrate service. Minimal image (no nc/curl) → NO in-container test:; health
+  # is observed via `docker service inspect` / throwaway overlay probes against
+  # the 9090 port (reachable ONLY inside turbolog-net containers).
+  auth-proxy:
+    # cloud-sql-proxy v2 (a.k.a. Cloud SQL Auth Proxy). Exact minor pin is an
+    # apply-time input; pinning the major keeps feature flags stable.
+    image: gcr.io/cloud-sql-connectors/cloud-sql-proxy:2
+    command:
+      - "--address"
+      - "0.0.0.0"            # bind DB port on all ifaces so overlay peers can reach it
+      - "--health-port=9090"
+      - "--http-address=0.0.0.0"
+      - "--credentials-file"
+      - "/run/secrets/cloudsql_sa_key"
+      - "${CLOUDSQL_CONNECTION}"   # <proj>:<region>:<inst> (envsubst'd by CI)
+    networks:
+      - turbolog-net
+    secrets:
+      - source: cloudsql_sa_key_v1
+        target: cloudsql_sa_key
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == manager
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ── backend: FastAPI + SPA static, single replica (LOCKED) ───────────────
+  # replicas:1 — the Telegram bot (lifespan) + in-memory VerificationStore are
+  # per-process and break at >1 (409 conflicts + split verification codes).
+  # update_config.order: stop-first — start-first with replicas:1 runs TWO
+  # backend processes during the update and re-triggers that same bug.
+  # RUN_MIGRATIONS=false — the one-shot migrate service owns alembic; the
+  # backend CMD is bare uvicorn (image ENTRYPOINT skips alembic).
+  backend:
+    image: southamerica-west1-docker.pkg.dev/dockerswarm-491114/turbolog/turbolog:${IMAGE_TAG}
+    environment:
+      # --- app / static ---
+      SERVE_STATIC: "true"
+      STATIC_DIR: /app/static
+      APP_URL: https://turbolog.example.com        # TODO operator: real Cloudflare domain (→ Secure cookies)
+      CORS_ORIGINS: https://turbolog.example.com    # TODO operator: same domain (same-origin in prod)
+      RUN_MIGRATIONS: "false"
+      ENABLE_SCHEDULER: "false"                     # the scheduler service owns the clock
+      # --- non-secret config (operator fills real values) ---
+      GOOGLE_CLIENT_ID: xxx.apps.googleusercontent.com
+      JIRA_EMAIL: admin@yourcompany.com
+      JIRA_DOMAIN: yourcompany.atlassian.net
+      JIRA_CACHE_TTL: "300"
+      JIRA_REQUEST_TIMEOUT: "10"
+      ADMIN_EMAILS: admin@yourcompany.com
+      REMINDER_TIME: "17:30"
+      AUDIT_TIMEZONE: America/Santiago              # tzdb key (NOT America/Chile/Santiago)
+      NOTIFIER_MODE: telegram
+      TELEGRAM_BOT_USERNAME: TurbologBot
+      TELEGRAM_CODE_TTL_SECONDS: "300"
+      JWT_EXPIRE_HOURS: "24"
+      LLM_BASE_URL: https://api.deepseek.com/v1
+      LLM_MODEL: deepseek-v4-flash
+      LLM_TIMEOUT: "30"
+      LLM_MAX_TOKENS: "4096"
+      LLM_THINKING: disabled
+      # --- secrets come from /run/secrets (pydantic secrets_dir), NOT here:
+      #   database_url, google_client_secret, jwt_secret, jira_api_token,
+      #   llm_api_key, telegram_bot_token (cloudsql_sa_key + cloudflare_token
+      #   are consumed by auth-proxy / cloudflared, not the backend) ---
+    networks:
+      - turbolog-net
+    secrets:
+      - source: database_url_v1
+        target: database_url
+      - source: google_client_secret_v1
+        target: google_client_secret
+      - source: jwt_secret_v1
+        target: jwt_secret
+      - source: jira_api_token_v1
+        target: jira_api_token
+      - source: llm_api_key_v1
+        target: llm_api_key
+      - source: telegram_bot_token_v1
+        target: telegram_bot_token
+      - source: cloudsql_sa_key_v1
+        target: cloudsql_sa_key
+      - source: cloudflare_token_v1
+        target: cloudflare_token
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health/ready').read()\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    deploy:
+      replicas: 1
+      update_config:
+        parallelism: 1
+        order: stop-first
+        failure_action: rollback
+      rollback_config:
+        parallelism: 1
+        order: stop-first
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ── scheduler: APScheduler one-process, manager-pinned ───────────────────
+  # Same image as backend, command overridden to the scheduler module.
+  # replicas:1 + node.role==manager placement (brief gap beats duplicate
+  # reminders). RUN_MIGRATIONS=false; ENABLE_SCHEDULER=true.
+  scheduler:
+    image: southamerica-west1-docker.pkg.dev/dockerswarm-491114/turbolog/turbolog:${IMAGE_TAG}
+    command: ["uv", "run", "python", "-m", "app.scheduler_runner"]
+    environment:
+      RUN_MIGRATIONS: "false"
+      ENABLE_SCHEDULER: "true"
+      SERVE_STATIC: "true"
+      STATIC_DIR: /app/static
+      APP_URL: https://turbolog.example.com        # TODO operator: real Cloudflare domain
+      CORS_ORIGINS: https://turbolog.example.com
+      GOOGLE_CLIENT_ID: xxx.apps.googleusercontent.com
+      JIRA_EMAIL: admin@yourcompany.com
+      JIRA_DOMAIN: yourcompany.atlassian.net
+      JIRA_CACHE_TTL: "300"
+      JIRA_REQUEST_TIMEOUT: "10"
+      ADMIN_EMAILS: admin@yourcompany.com
+      REMINDER_TIME: "17:30"
+      AUDIT_TIMEZONE: America/Santiago
+      NOTIFIER_MODE: telegram
+      TELEGRAM_BOT_USERNAME: TurbologBot
+      TELEGRAM_CODE_TTL_SECONDS: "300"
+      JWT_EXPIRE_HOURS: "24"
+      LLM_BASE_URL: https://api.deepseek.com/v1
+      LLM_MODEL: deepseek-v4-flash
+      LLM_TIMEOUT: "30"
+      LLM_MAX_TOKENS: "4096"
+      LLM_THINKING: disabled
+    networks:
+      - turbolog-net
+    secrets:
+      - source: database_url_v1
+        target: database_url
+      - source: google_client_secret_v1
+        target: google_client_secret
+      - source: jwt_secret_v1
+        target: jwt_secret
+      - source: jira_api_token_v1
+        target: jira_api_token
+      - source: llm_api_key_v1
+        target: llm_api_key
+      - source: telegram_bot_token_v1
+        target: telegram_bot_token
+      - source: cloudsql_sa_key_v1
+        target: cloudsql_sa_key
+      - source: cloudflare_token_v1
+        target: cloudflare_token
+    healthcheck:
+      # PID 1 alive (python:3.12-slim has no procps/pgrep).
+      test: ["CMD-SHELL", "python -c \"import os; os.kill(1, 0)\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    deploy:
+      replicas: 1
+      update_config:
+        parallelism: 1
+        order: stop-first
+        failure_action: rollback
+      rollback_config:
+        parallelism: 1
+        order: stop-first
+      placement:
+        constraints:
+          - node.role == manager
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ── cloudflared: Cloudflare Tunnel edge (TLS termination) ────────────────
+  # Remote-managed (dashboard) tunnel: ingress rule -> http://backend:8000 is
+  # configured in the Cloudflare dashboard (canonical copy in the runbook), so
+  # this container only needs to `tunnel run` with TUNNEL_TOKEN.
+  #
+  # Swarm secrets are FILES, but cloudflared reads TUNNEL_TOKEN from ENV, so a
+  # /bin/sh bridge reads the secret file and exports it. cloudflared:latest is
+  # Alpine-based and ships /bin/sh; if you pin a distroless tag, replace this
+  # with an init sidecar that writes the env. The single `$` is intentional —
+  # the envsubst allow-list does not match `$(...)` and the design relies on
+  # `docker stack deploy` not re-interpolating `$VAR`, so the shell receives
+  # `$(cat ...)` literally.
+  cloudflared:
+    image: cloudflare/cloudflared:latest   # TODO operator: pin a date tag for reproducibility
+    command:
+      - "/bin/sh"
+      - "-c"
+      - "export TUNNEL_TOKEN=$(cat /run/secrets/cloudflare_token); exec cloudflared tunnel --no-autoupdate run"
+    networks:
+      - turbolog-net
+    secrets:
+      - source: cloudflare_token_v1
+        target: cloudflare_token
+    deploy:
+      replicas: 1
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
