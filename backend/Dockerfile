@@ -21,8 +21,14 @@ RUN uv sync --frozen --no-dev
 # Backend source
 COPY backend/ .
 
+# Entrypoint: owns the RUN_MIGRATIONS gate (default runs alembic for local dev;
+# Swarm sets RUN_MIGRATIONS=false so a one-shot migrate service owns migrations).
+COPY backend/entrypoint.sh /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh
+
 # Frontend static files (from Stage 1)
 COPY --from=frontend-build /app/build ./static
 
-# Run Alembic migrations and start server
-CMD ["sh", "-c", "uv run alembic upgrade head && uv run uvicorn app.main:app --host 0.0.0.0 --port 8000"]
+# Entrypoint runs migrations (unless RUN_MIGRATIONS=false) then execs the CMD.
+ENTRYPOINT ["/app/entrypoint.sh"]
+CMD ["uv", "run", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

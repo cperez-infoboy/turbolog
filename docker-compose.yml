@@ -27,7 +27,10 @@ services:
     build:
       context: .
       dockerfile: backend/Dockerfile
-    command: ["sh", "-c", "uv run alembic upgrade head && uv run python -m app.scheduler_runner"]
+    # The image entrypoint owns the RUN_MIGRATIONS gate (default runs alembic,
+    # preserving the dev boot). The command is just the scheduler module, passed
+    # as args to the entrypoint's `exec "$@"`.
+    command: ["uv", "run", "python", "-m", "app.scheduler_runner"]
     volumes:
       - ./backend/.env:/app/.env:ro
     depends_on:
