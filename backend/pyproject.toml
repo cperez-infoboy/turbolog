@@ -31,6 +31,12 @@ dev = [
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+# secrets_dir="/run/secrets" is declared in config.py for Docker Swarm prod.
+# In dev/test the dir is absent and pydantic-settings emits a benign UserWarning
+# per Settings instantiation. Silence that one warning only (scoped by module).
+filterwarnings = [
+    "ignore::UserWarning:pydantic_settings.sources.providers.secrets",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["app"]

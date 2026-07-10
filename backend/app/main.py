@@ -1,17 +1,20 @@
 import hashlib
+import logging
 import os
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from sqlalchemy import select
+from sqlalchemy import select, text
 
-from app.config import settings
+from app.config import assert_prod_secrets, prod_secrets_dir_exists, settings
+
+logger = logging.getLogger("turbolog.main")
 from app.models.allowed_email import AllowedEmail
 from app.routers.auth import router as auth_router
 from app.routers.audit import router as audit_router
@@ -37,34 +40,47 @@ async def _seed_admin_allowed_emails() -> None:
     On a fresh database the backfill migration has no users to copy from, so
     seed emails are absent from the allow-list.  This runs once at startup and
     is idempotent (skips existing rows).
+
+    Schema-tolerant: on a first-deploy / unmigrated DB the ``allowed_emails``
+    table may not exist yet. Rather than abort the lifespan, the error is
+    logged and seeding is skipped (the one-shot migration will create the table
+    and a later restart seeds it).
     """
     seed = {e.strip().lower() for e in settings.ADMIN_EMAILS.split(",") if e.strip()}
     if not seed:
         return
     from app.database import async_session as _session_factory
 
-    async with _session_factory() as session:
-        existing = (
-            await session.execute(
-                select(AllowedEmail.email).where(
-                    AllowedEmail.email.in_(list(seed))
+    try:
+        async with _session_factory() as session:
+            existing = (
+                await session.execute(
+                    select(AllowedEmail.email).where(
+                        AllowedEmail.email.in_(list(seed))
+                    )
                 )
-            )
-        ).scalars().all()
-        existing_set = {e.lower() for e in existing}
-        now = datetime.now(timezone.utc).isoformat()
-        for email in seed - existing_set:
-            session.add(AllowedEmail(
-                id=hashlib.md5(email.encode()).hexdigest(),
-                email=email,
-                created_at=now,
-            ))
-        await session.commit()
+            ).scalars().all()
+            existing_set = {e.lower() for e in existing}
+            now = datetime.now(timezone.utc).isoformat()
+            for email in seed - existing_set:
+                session.add(AllowedEmail(
+                    id=hashlib.md5(email.encode()).hexdigest(),
+                    email=email,
+                    created_at=now,
+                ))
+            await session.commit()
+    except Exception as exc:  # noqa: BLE001 — best-effort seed must not abort boot
+        logger.warning("Skipping admin allowed-email seed (schema missing?): %s", exc)
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
     global _bot_service
+    # Prod-only fail-fast: an unmounted genuine secret makes pydantic silently
+    # fall back to an insecure default. Gate on /run/secrets so dev (no such
+    # dir) never trips it even when defaults are present.
+    if prod_secrets_dir_exists():
+        assert_prod_secrets(settings)
     await _seed_admin_allowed_emails()
     if settings.TELEGRAM_BOT_TOKEN:
         from app.database import async_session as _session_factory
@@ -81,10 +97,11 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
 
 app = FastAPI(title="Turbolog", version="0.1.0", lifespan=lifespan)
 
-# CORS middleware for development (disabled in production via same-origin)
+# CORS middleware. Same-origin in production (Cloudflare serves frontend +
+# API); allow_origins is derived from CORS_ORIGINS (comma-separated -> list).
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
+    allow_origins=settings.CORS_ORIGINS.split(","),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -101,6 +118,26 @@ app.include_router(telegram_router)
 @app.get("/api/health")
 async def health_check():
     return {"status": "ok"}
+
+
+@app.get("/api/health/ready")
+async def health_ready():
+    """Readiness probe: opens a DB session AND runs a SCHEMA sanity query.
+
+    ``SELECT 1 FROM alembic_version`` only succeeds when migrations have run
+    (the table exists). A bare ``SELECT 1`` would report ready against an
+    empty/unmigrated DB while real requests 500 on missing tables. Returns 503
+    on any DB/schema error so Swarm + cloudflared do not route traffic to a
+    backend whose schema is not in place.
+    """
+    from app.database import async_session
+
+    try:
+        async with async_session() as session:
+            await session.execute(text("SELECT 1 FROM alembic_version"))
+    except Exception as exc:  # noqa: BLE001 — any DB failure => not ready
+        raise HTTPException(status_code=503, detail=f"Database not ready: {exc}") from exc
+    return {"status": "ready"}
 
 
 # --- Static file serving (production only) ------------------------------------

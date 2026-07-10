@@ -19,11 +19,24 @@ import asyncio
 import logging
 import signal
 
-from app.config import settings
+from app.config import assert_prod_secrets, prod_secrets_dir_exists, settings
 from app.jobs.engine import shutdown_scheduler, start_scheduler
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("turbolog.scheduler_runner")
+
+
+def run() -> None:
+    """Sync entrypoint: fail-fast on insecure prod secrets, then start the loop.
+
+    The scheduler runs under ``asyncio.run`` with NO FastAPI lifespan, so it
+    would otherwise skip ``assert_prod_secrets``. The check is gated on
+    ``/run/secrets`` (same as the web lifespan): dev has no such dir and is
+    never tripped, prod aborts here before the event loop starts.
+    """
+    if prod_secrets_dir_exists():
+        assert_prod_secrets(settings)
+    asyncio.run(main())
 
 
 async def main() -> None:
@@ -50,4 +63,4 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    run()
