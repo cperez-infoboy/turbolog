@@ -1,0 +1,40 @@
+# ============================================================================
+# Build simple: cuando subís código a "main", GitHub compila la imagen del
+# backend y la publica en GitHub Container Registry (GHCR). Nada más.
+# Después la instalás en el swarm con ./deploy.sh
+#
+# No configurás NINGÚN secreto a mano: GITHUB_TOKEN es automático.
+# Lo único que tenés que hacer una vez (ver docs/deploy-runbook.md) es dejar
+# el paquete de GHCR como público, para que los nodos del swarm puedan
+# descargar la imagen sin autenticarse.
+# ============================================================================
+name: build-image
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  packages: write   # permiso para publicar la imagen en GHCR
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in a GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}   # automático, no lo configures
+
+      - name: Compilar y publicar la imagen
+        run: |
+          IMAGE=ghcr.io/${{ github.repository_owner }}/turbolog
+          # dos etiquetas: :latest (la que usa deploy.sh por defecto) y :<sha> (para rollback exacto)
+          docker build -t "$IMAGE:latest" -t "$IMAGE:${{ github.sha }}" backend
+          docker push "$IMAGE:latest"
+          docker push "$IMAGE:${{ github.sha }}"

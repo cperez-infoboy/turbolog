@@ -1,0 +1,173 @@
+# ============================================================================
+# Turbolog — Docker Swarm stack  (VERSIÓN SIMPLE)
+# ============================================================================
+# Este archivo describe los 4 servicios que corren en el swarm. Se despliega
+# UNA sola vez; después, para subir una nueva versión, usás ./deploy.sh
+# (no volvés a tocar este archivo).
+#
+# PRIMER DEPLOY (una sola vez):
+#   1. Completá los valores marcados "TODO operador" más abajo.
+#   2. Creá los 8 secretos:   bash scripts/create-secrets.sh
+#   3. Subí y desplegá:
+#        gcloud compute scp docker-stack.yml <MANAGER>:~/
+#        gcloud compute ssh <MANAGER> -- docker stack deploy -c ~/docker-stack.yml turbolog
+#
+# La imagen la arma GitHub solo (ver .github/workflows/build-image.yml) y vive
+# en ghcr.io/cperez-infoboy/turbolog. El swarm la descarga de ahí.
+#
+# Por qué 4 servicios:
+#   auth-proxy  → puente seguro a la base Cloud SQL (gestionada).
+#   backend     → la app FastAPI + el frontend. UNA réplica (el bot de Telegram
+#                 y el store de códigos no toleran más de una).
+#   scheduler   → los recordatorios de las 17:30. UNA réplica, en el manager.
+#   cloudflared → el túnel de Cloudflare que expone la app con HTTPS.
+# ============================================================================
+
+networks:
+  turbolog-net:                 # red interna del swarm por la que se hablan
+    driver: overlay
+    attachable: true
+
+# --- Secretos (valores sensibles). Los creás con scripts/create-secrets.sh) ---
+# El "target" es el nombre interno que pydantic espera; el "_v1" es el nombre
+# real del secreto en el swarm (para poder rotar a _v2 sin romper nada).
+secrets:
+  database_url_v1:         { external: true }
+  google_client_secret_v1: { external: true }
+  jwt_secret_v1:           { external: true }
+  jira_api_token_v1:       { external: true }
+  llm_api_key_v1:          { external: true }
+  telegram_bot_token_v1:   { external: true }
+  cloudsql_sa_key_v1:      { external: true }
+  cloudflare_token_v1:     { external: true }
+
+services:
+
+  # ── auth-proxy: puente a Cloud SQL ─────────────────────────────────────────
+  auth-proxy:
+    image: gcr.io/cloud-sql-connectors/cloud-sql-proxy:2
+    command:
+      - "--address"
+      - "0.0.0.0"                       # que los otros servicios lo alcancen por la red
+      - "--credentials-file"
+      - "/run/secrets/cloudsql_sa_key"
+      - "dockerswarm-491114:southamerica-west1:turbolog"  # TODO operador: tu Cloud SQL connection name
+    networks: [turbolog-net]
+    secrets:
+      - { source: cloudsql_sa_key_v1, target: cloudsql_sa_key }
+    deploy:
+      replicas: 1
+      placement: { constraints: [node.role == manager] }
+    logging: { driver: json-file, options: { max-size: "10m", max-file: "3" } }
+
+  # ── backend: la app (FastAPI + frontend). UNA réplica ──────────────────────
+  backend:
+    image: ghcr.io/cperez-infoboy/turbolog:latest
+    # No seteamos RUN_MIGRATIONS → el backend corre las migraciones solo al arrancar.
+    environment:
+      SERVE_STATIC: "true"
+      STATIC_DIR: /app/static
+      APP_URL: https://turbolog.example.com          # TODO operador: tu dominio Cloudflare (con https)
+      CORS_ORIGINS: https://turbolog.example.com      # TODO operador: igual que APP_URL
+      ENABLE_SCHEDULER: "false"                       # el reloj lo maneja el servicio "scheduler"
+      GOOGLE_CLIENT_ID: xxx.apps.googleusercontent.com  # TODO operador
+      JIRA_EMAIL: admin@yourcompany.com               # TODO operador
+      JIRA_DOMAIN: yourcompany.atlassian.net          # TODO operador
+      JIRA_CACHE_TTL: "300"
+      JIRA_REQUEST_TIMEOUT: "10"
+      ADMIN_EMAILS: admin@yourcompany.com             # TODO operador
+      REMINDER_TIME: "17:30"
+      AUDIT_TIMEZONE: America/Santiago
+      NOTIFIER_MODE: telegram
+      TELEGRAM_BOT_USERNAME: TurbologBot
+      TELEGRAM_CODE_TTL_SECONDS: "300"
+      JWT_EXPIRE_HOURS: "24"
+      LLM_BASE_URL: https://api.deepseek.com/v1
+      LLM_MODEL: deepseek-v4-flash
+      LLM_TIMEOUT: "30"
+      LLM_MAX_TOKENS: "4096"
+      LLM_THINKING: disabled
+    networks: [turbolog-net]
+    secrets:
+      - { source: database_url_v1, target: database_url }
+      - { source: google_client_secret_v1, target: google_client_secret }
+      - { source: jwt_secret_v1, target: jwt_secret }
+      - { source: jira_api_token_v1, target: jira_api_token }
+      - { source: llm_api_key_v1, target: llm_api_key }
+      - { source: telegram_bot_token_v1, target: telegram_bot_token }
+      - { source: cloudsql_sa_key_v1, target: cloudsql_sa_key }
+      - { source: cloudflare_token_v1, target: cloudflare_token }
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health/ready').read()\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    deploy:
+      replicas: 1
+      update_config: { parallelism: 1, order: stop-first, failure_action: rollback }
+      rollback_config: { parallelism: 1, order: stop-first }
+    logging: { driver: json-file, options: { max-size: "10m", max-file: "3" } }
+
+  # ── scheduler: recordatorios 17:30. UNA réplica, en el manager ─────────────
+  scheduler:
+    image: ghcr.io/cperez-infoboy/turbolog:latest
+    command: ["uv", "run", "python", "-m", "app.scheduler_runner"]
+    environment:
+      RUN_MIGRATIONS: "false"        # el backend ya migra; acá no se duplica
+      ENABLE_SCHEDULER: "true"
+      SERVE_STATIC: "true"
+      STATIC_DIR: /app/static
+      APP_URL: https://turbolog.example.com          # TODO operador: tu dominio Cloudflare
+      CORS_ORIGINS: https://turbolog.example.com
+      GOOGLE_CLIENT_ID: xxx.apps.googleusercontent.com
+      JIRA_EMAIL: admin@yourcompany.com
+      JIRA_DOMAIN: yourcompany.atlassian.net
+      JIRA_CACHE_TTL: "300"
+      JIRA_REQUEST_TIMEOUT: "10"
+      ADMIN_EMAILS: admin@yourcompany.com
+      REMINDER_TIME: "17:30"
+      AUDIT_TIMEZONE: America/Santiago
+      NOTIFIER_MODE: telegram
+      TELEGRAM_BOT_USERNAME: TurbologBot
+      TELEGRAM_CODE_TTL_SECONDS: "300"
+      JWT_EXPIRE_HOURS: "24"
+      LLM_BASE_URL: https://api.deepseek.com/v1
+      LLM_MODEL: deepseek-v4-flash
+      LLM_TIMEOUT: "30"
+      LLM_MAX_TOKENS: "4096"
+      LLM_THINKING: disabled
+    networks: [turbolog-net]
+    secrets:
+      - { source: database_url_v1, target: database_url }
+      - { source: google_client_secret_v1, target: google_client_secret }
+      - { source: jwt_secret_v1, target: jwt_secret }
+      - { source: jira_api_token_v1, target: jira_api_token }
+      - { source: llm_api_key_v1, target: llm_api_key }
+      - { source: telegram_bot_token_v1, target: telegram_bot_token }
+      - { source: cloudsql_sa_key_v1, target: cloudsql_sa_key }
+      - { source: cloudflare_token_v1, target: cloudflare_token }
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import os; os.kill(1, 0)\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    deploy:
+      replicas: 1
+      placement: { constraints: [node.role == manager] }
+      update_config: { parallelism: 1, order: stop-first }
+    logging: { driver: json-file, options: { max-size: "10m", max-file: "3" } }
+
+  # ── cloudflared: túnel Cloudflare (HTTPS hacia internet) ───────────────────
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    command:
+      - "/bin/sh"
+      - "-c"
+      - "export TUNNEL_TOKEN=$(cat /run/secrets/cloudflare_token); exec cloudflared tunnel --no-autoupdate run"
+    networks: [turbolog-net]
+    secrets:
+      - { source: cloudflare_token_v1, target: cloudflare_token }
+    deploy: { replicas: 1 }
+    logging: { driver: json-file, options: { max-size: "10m", max-file: "3" } }

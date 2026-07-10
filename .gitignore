@@ -30,10 +30,6 @@ frontend/.vercel/
 .env.*.local
 .env.production
 
-# Generated Swarm stack (envsubst output of docker-stack.yml.tmpl; only the
-# .tmpl template is tracked)
-docker-stack.yml
-
 # OS
 .DS_Store
 Thumbs.db
