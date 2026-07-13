@@ -22,7 +22,7 @@ RUN uv sync --frozen --no-dev
 COPY backend/ .
 
 # Entrypoint: owns the RUN_MIGRATIONS gate (default runs alembic for local dev;
-# Swarm sets RUN_MIGRATIONS=false so a one-shot migrate service owns migrations).
+# in prod the backend also migrates on boot — safe because replicas:1 + stop-first).
 COPY backend/entrypoint.sh /app/entrypoint.sh
 RUN chmod +x /app/entrypoint.sh
 
