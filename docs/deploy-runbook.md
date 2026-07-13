@@ -20,6 +20,11 @@
 - **Vos servís** esa imagen en el swarm con `./deploy.sh` (un comando, desde tu notebook).
 - En el swarm corren **4 servicios**: `auth-proxy` (puente a la base), `backend` (la app), `scheduler` (recordatorios 17:30) y `cloudflared` (tu HTTPS público).
 
+> **Dónde está el límite entre "automático" y "manual"**:
+> - **Automático** (lo hace GitHub solo al pushear a `main`): compilar y publicar la imagen en GHCR.
+> - **Manual** (lo hacés vos): correr `./deploy.sh` para instalar esa imagen en el swarm. El deploy **no** se dispara solo al pushear.
+> - **Manual, una sola vez**: dejar el paquete de GHCR como **público** (Paso 6), para que los nodos del swarm puedan bajar la imagen sin autenticarse.
+
 Vas a hacer **9 pasos**. Los pasos 1–3 son crear 3 cosas nuevas en GCP/Cloudflare (una sola vez). El resto es cargar valores y desplegar.
 
 ---
@@ -208,7 +213,12 @@ Después abrí `https://turbolog.tuempresa.cl` en el navegador y probá logueart
 
 Cada vez que cambies código:
 ```bash
-git push          # GitHub arma la imagen nueva
+git push          # GitHub arma la imagen nueva (tarda unos minutos)
+```
+**Esperá a que termine el build en GitHub Actions** (pestaña *Actions* del repo).
+Si corrés `./deploy.sh` antes de que termine, el swarm se baja la imagen `:latest`
+vieja y no ves tu cambio.
+```bash
 ./deploy.sh       # la instala en el swarm (un comando)
 ```
 
