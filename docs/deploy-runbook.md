@@ -156,25 +156,63 @@ gcloud sql users create turbolog --instance=pg-infositio-dev \
   --password='Tb1-CAMBIÁ_ESTO_por_algo_largo_y_aleatorio'
 ```
 
-**1b. Darle ownership de la db al user** (sino las migraciones fallan).
-Cloud SQL crea la db propiedad del superuser (`postgres`), no del user
-`turbolog`. Sin ownership, `turbolog` no puede crear tablas → Alembic revienta
-al arrancar. Hay que correr **un** comando SQL como `postgres`:
+**1b. Grantearle permisos al user `turbolog`** (sino las migraciones fallan).
+Cloud SQL crea la db `turbolog` propiedad del user `postgres`, no del user
+`turbolog`. Sin permisos, `turbolog` no puede crear tablas → Alembic revienta
+al arrancar. Hay que grantearle `CREATE` sobre la db y el schema `public`.
+
+⚠️ `pg-infositio-dev` es **private IP only** (sin IP pública) → no la podés
+alcanzar desde tu notebook ni desde Cloud Shell. Hay que conectarse desde un
+nodo del swarm, que sí está en la misma VPC. Dos pasos:
+
+**1b-i. Entrá a un nodo del swarm** por túnel IAP (la 1ra vez genera una clave
+SSH; si pide passphrase, dejala vacía):
 ```bash
-gcloud sql connect pg-infositio-dev --user=postgres
-# te pide la password del user postgres (el superuser de la instancia)
-# ya en el prompt de psql:
-ALTER DATABASE turbolog OWNER TO turbolog;
-\q
+gcloud compute ssh swarm-node-1 --zone=southamerica-west1-a --tunnel-through-iap
 ```
-> Si no te acordás la password de `postgres`: reseteala con
+
+**1b-ii. Ya en el nodo, corré `psql` en un contenedor con red host** (así
+alcanza el IP privado de Cloud SQL) y conectate como `postgres`:
+```bash
+docker run -it --rm --network host postgres:16 \
+  psql "host=10.18.224.3 user=postgres dbname=postgres sslmode=require"
+```
+(`10.18.224.3` es el IP privado de `pg-infositio-dev`. Si alguna vez cambia, lo
+sacás con `gcloud sql instances describe pg-infositio-dev --format='value(ipAddresses[0].ipAddress)'`).
+- `postgres:16` = imagen con el cliente `psql` (tarda unos segundos la 1ra vez).
+- `--network host` → el contenedor usa la red del nodo = VPC → llega a Cloud SQL.
+- `sslmode=require` → Cloud SQL exige SSL.
+- Te pide `Password for user postgres:` → la password del user `postgres`.
+
+Ya en el prompt `postgres=>`, pegá **una línea por vez** (si pegás todas juntas
+el `\c` se rompe):
+```sql
+GRANT ALL ON DATABASE turbolog TO turbolog;
+```
+→ `GRANT`. Después:
+```
+\c turbolog
+```
+→ el prompt cambia a `turbolog=>`. Después:
+```sql
+GRANT ALL ON SCHEMA public TO turbolog;
+```
+→ `GRANT`. Salí con `\q` y después `exit` para dejar el nodo.
+
+> **¿Por qué GRANT y no `ALTER DATABASE turbolog OWNER TO turbolog`?** El
+> `postgres` de Cloud SQL no es superuser de verdad (es `cloudsqlsuperuser`,
+> por eso el prompt es `=>` y no `=#`); no puede transferir ownership a un rol
+> del que no es miembro (falla con `must be able to SET ROLE "turbolog"`). Los
+> GRANT alcanzan y sobran: le dan a `turbolog` `CREATE` sobre la db + el schema
+> `public` → Alembic crea las tablas que necesita y `turbolog` es dueño de las
+> que crea.
+
+> Si no te acordás la password de `postgres`: reseteala (desde tu notebook, no
+> necesita proxy ni VPC) con
 > `gcloud sql users set-password postgres --instance=pg-infositio-dev --prompt-for-password`
 > (ojo: si alguna otra app usara el user `postgres` se rompería — las de este
 > proyecto usan `planitrack_qa` / `user_starken`, así que probablemente esté sin
 > usar).
-> **Fallback** si `gcloud sql connect` no te anda: Console GCP → Cloud SQL →
-> `pg-infositio-dev` → botón **Cloud Shell** / **Cloud SQL Studio** → corrés el
-> `ALTER DATABASE turbolog OWNER TO turbolog;` ahí.
 
 **1c. Backups automáticos** — `pg-infositio-dev` ya existe; verificá que tenga
 backups encendidos (y si no, encendelos):
