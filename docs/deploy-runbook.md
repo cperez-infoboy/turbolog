@@ -133,36 +133,68 @@ Son **9 pasos** para dejar la infra parada + **una sección extra** (pasos
 10–16) para habilitar el deploy por botón. Los pasos 1–3 crean tres cosas
 nuevas en GCP / Cloudflare / Google. El resto es cargar valores y desplegar.
 
-### Paso 1 — Crear la base de datos (Cloud SQL) 🗄️
+### Paso 1 — La base de datos (Cloud SQL) 🗄️
 
-Crear una instancia Postgres gestionada (Google la mantiene y la backupuea
-sola). Una sola vez.
+Reutilizamos la instancia Cloud SQL que ya tenés, **`pg-infositio-dev`** (un
+Postgres compartido). Turbolog vive en su **propia db + su propio user** dentro
+de ella, aislado de las otras apps que corren ahí. No creamos instancia nueva.
 
+> **Alternativa**: si preferís una instancia dedicada para prod (aislamiento
+> total, backups propios, la dimensionás a tu medida), creala con
+> `gcloud sql instances create turbolog --database-version=POSTGRES_16 ...` y
+> usá ese nombre en todos los pasos. Acá seguimos con `pg-infositio-dev`.
+
+**1a. Crear la db `turbolog` y el user `turbolog`** dentro de la instancia:
 ```bash
-# 1a. Crear la instancia (tarda un par de minutos). Elegí una password fuerte.
-gcloud sql instances create turbolog \
-  --database-version=POSTGRES_16 --region=southamerica-west1 \
-  --root-password=UNA_PASSWORD_FUERTE
+# la db (aislada de las demás que viven en pg-infositio-dev)
+gcloud sql databases create turbolog --instance=pg-infositio-dev
+
+# el user. La password DEBE tener: minúscula + MAYÚSCULA + número + caracter
+# especial (Cloud SQL la rechaza si no). Usá '-' como especial: es URL-safe,
+# no rompe la DATABASE_URL después.
+gcloud sql users create turbolog --instance=pg-infositio-dev \
+  --password='Tb1-CAMBIÁ_ESTO_por_algo_largo_y_aleatorio'
 ```
 
+**1b. Darle ownership de la db al user** (sino las migraciones fallan).
+Cloud SQL crea la db propiedad del superuser (`postgres`), no del user
+`turbolog`. Sin ownership, `turbolog` no puede crear tablas → Alembic revienta
+al arrancar. Hay que correr **un** comando SQL como `postgres`:
 ```bash
-# 1b. Crear la base "turbolog" y un usuario "turbolog" con su password
-gcloud sql databases create turbolog --instance=turbolog
-gcloud sql users create turbolog --instance=turbolog --password=OTRA_PASSWORD_FUERTE
+gcloud sql connect pg-infositio-dev --user=postgres
+# te pide la password del user postgres (el superuser de la instancia)
+# ya en el prompt de psql:
+ALTER DATABASE turbolog OWNER TO turbolog;
+\q
+```
+> Si no te acordás la password de `postgres`: reseteala con
+> `gcloud sql users set-password postgres --instance=pg-infositio-dev --prompt-for-password`
+> (ojo: si alguna otra app usara el user `postgres` se rompería — las de este
+> proyecto usan `planitrack_qa` / `user_starken`, así que probablemente esté sin
+> usar).
+> **Fallback** si `gcloud sql connect` no te anda: Console GCP → Cloud SQL →
+> `pg-infositio-dev` → botón **Cloud Shell** / **Cloud SQL Studio** → corrés el
+> `ALTER DATABASE turbolog OWNER TO turbolog;` ahí.
+
+**1c. Backups automáticos** — `pg-infositio-dev` ya existe; verificá que tenga
+backups encendidos (y si no, encendelos):
+```bash
+gcloud sql instances describe pg-infositio-dev \
+  --format='value(settings.backupConfiguration.enabled)'
+# si dice vacío o false, encendelos:
+gcloud sql instances patch pg-infositio-dev --backup-start-time=03:00
 ```
 
-```bash
-# 1c. Encender backups automáticos (recomendado — cada noche a las 03:00)
-gcloud sql instances patch turbolog --backup-start-time=03:00
-```
+**Anotá esto** (lo usás en el Paso 4 y el Paso 7):
+- 🔑 **Connection name** → `dockerswarm-491114:southamerica-west1:pg-infositio-dev`
+  (es el identificador de la instancia en GCP, **no** una URL de postgres).
+- 🔑 **DATABASE_URL** → `postgresql+asyncpg://turbolog:<PASSWORD>@auth-proxy:5432/turbolog`
+  (con TU password del paso 1a; el `@auth-proxy:5432` es **fijo** — es el DNS
+  interno del swarm, no el host de Cloud SQL).
 
-**Anotá esto** (lo usás en el Paso 7):
-- 🔑 **Connection name** → `gcloud sql instances describe turbolog --format='value(connectionName)'`
-  (algo como `dockerswarm-491114:southamerica-west1:turbolog`)
-- 🔑 **Usuario/password de la base** → `turbolog` / la password del paso 1b.
-
-Ahora creá una **service account** que permita a la app conectarse a esa base
-(el contenedor `auth-proxy` del swarm la usa):
+Ahora creá la **service account** que el contenedor `auth-proxy` del swarm usa
+para conectarse a Cloud SQL (es una cuenta distinta de la del deploy, vivís
+separada):
 ```bash
 # 1d. Crear la SA "turbolog-cloudsql" y darle permiso de cliente de Cloud SQL
 gcloud iam service-accounts create turbolog-cloudsql
@@ -218,7 +250,7 @@ Abrí `docker-stack.yml` y reemplazá todos los valores marcados `TODO operador`
 
 | Campo | Qué poner |
 |---|---|
-| `auth-proxy` → connection name | tu **Connection name** del Paso 1 (`dockerswarm-491114:southamerica-west1:turbolog`) |
+| `auth-proxy` → connection name | tu **Connection name** del Paso 1 (`dockerswarm-491114:southamerica-west1:pg-infositio-dev`) |
 | `APP_URL` (backend y scheduler) | tu dominio con https: `https://turbolog.tuempresa.cl` |
 | `CORS_ORIGINS` | lo mismo que `APP_URL` |
 | `GOOGLE_CLIENT_ID` | tu Client ID del Paso 3 |
