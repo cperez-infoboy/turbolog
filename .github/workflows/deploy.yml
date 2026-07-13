@@ -42,6 +42,7 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     env:
+      GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
       GCP_ZONE: ${{ vars.GCP_ZONE }}
       SWARM_MANAGER_NODE: ${{ vars.SWARM_MANAGER_NODE }}
       APP_DOMAIN: ${{ vars.APP_DOMAIN }}
@@ -79,7 +80,7 @@ jobs:
           TAG: ${{ steps.tag.outputs.tag }}
         run: |
           gcloud compute ssh "$SWARM_MANAGER_NODE" \
-            --tunnel-through-iap --zone="$GCP_ZONE" \
+            --tunnel-through-iap --zone="$GCP_ZONE" --project="$GCP_PROJECT_ID" \
             --ssh-key-file="$RUNTIME_DIR/gcp_ssh_key" \
             --ssh-flag="-o StrictHostKeyChecking=no" \
             --ssh-flag="-o UserKnownHostsFile=/dev/null" \
