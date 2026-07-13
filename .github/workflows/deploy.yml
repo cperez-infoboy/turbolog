@@ -1,0 +1,100 @@
+# ============================================================================
+# Deploy a GCP Docker Swarm — MANUAL (un botón).
+# ============================================================================
+# Este workflow NO se dispara solo al pushear. Lo disparás VOS desde la
+# pestaña "Actions" del repo → "deploy" → "Run workflow".
+#
+# ¿Qué hace? Se autentica en GCP con una Service Account (cuya key vive en el
+# secret GCP_SA_KEY), abre un túnel IAP hasta el nodo manager del swarm, y le
+# dice "actualizá backend y scheduler a esta imagen". Después hace un smoke
+# test (la app responde 200, no tira 5xx).
+#
+# El BUILD de la imagen es otro workflow (build-image.yml) que sí es automático
+# al pushear a main. Acá solo la INSTALÁS en prod cuando vos querés.
+#
+# Requisitos (una sola vez, ver docs/deploy-runbook.md):
+#   - Secret GCP_SA_KEY          → key JSON de la SA turbolog-deployer
+#   - Variable GCP_PROJECT_ID    → dockerswarm-491114
+#   - Variable GCP_ZONE          → southamerica-west1-a
+#   - Variable SWARM_MANAGER_NODE → nombre del nodo manager
+#   - Variable APP_DOMAIN        → tu dominio Cloudflare (sin https://)
+# ============================================================================
+name: deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "Tag a deployar (default: latest; poné un SHA para rollback)"
+        required: false
+        default: "latest"
+        type: string
+
+# No cancelar un deploy en curso — dos deploys solapados se pisan y rompen.
+concurrency:
+  group: deploy-turbolog
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      GCP_ZONE: ${{ vars.GCP_ZONE }}
+      SWARM_MANAGER_NODE: ${{ vars.SWARM_MANAGER_NODE }}
+      APP_DOMAIN: ${{ vars.APP_DOMAIN }}
+      IMAGE: ghcr.io/cperez-infoboy/turbolog
+    steps:
+      - uses: actions/checkout@v4
+
+      # Auth con la Service Account (path A: SA key, no Workload Identity).
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      # Genera una clave SSH fresca por deploy y la registra en OS Login.
+      # Así GitHub puede SSHuear al manager sin dejar claves tiradas.
+      - name: Generate and register CI SSH key (OS Login)
+        env:
+          RUNTIME_DIR: ${{ runner.temp }}
+        run: |
+          ssh-keygen -t rsa -N "" -f "$RUNTIME_DIR/gcp_ssh_key" -q
+          gcloud compute os-login ssh-keys add --key-file="$RUNTIME_DIR/gcp_ssh_key.pub" || true
+
+      - name: Resolve image tag
+        id: tag
+        run: echo "tag=${{ inputs.image_tag }}" >> "$GITHUB_OUTPUT"
+
+      # El deploy propiamente: lo mismo que deploy.sh, vía túnel IAP.
+      # Actualiza backend y scheduler a la imagen pedida. El swarm la descarga
+      # y reinicia los servicios solo (stop-first, sin downtime doble).
+      - name: Roll image (backend + scheduler)
+        env:
+          RUNTIME_DIR: ${{ runner.temp }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          gcloud compute ssh "$SWARM_MANAGER_NODE" \
+            --tunnel-through-iap --zone="$GCP_ZONE" \
+            --ssh-key-file="$RUNTIME_DIR/gcp_ssh_key" \
+            --ssh-flag="-o StrictHostKeyChecking=no" \
+            --ssh-flag="-o UserKnownHostsFile=/dev/null" \
+            -- "docker service update --image $IMAGE:$TAG turbolog_backend && \
+               docker service update --image $IMAGE:$TAG turbolog_scheduler"
+
+      # Smoke test: la app responde y no tira 500 (secreto roto / DB mal).
+      # /api/health → 200. /api/auth/me → 401 (correcto, no estás logueado)
+      # o 5xx (roto → considerá rollback).
+      - name: Post-deploy smoke
+        run: |
+          set -uo pipefail
+          READY=$(curl -fsS -o /dev/null -w "%{http_code}" "https://$APP_DOMAIN/api/health" || echo "000")
+          echo "/api/health -> $READY"
+          [ "$READY" = "200" ] || { echo "::error::health no devolvió 200 — considerá rollback"; exit 1; }
+          ME=$(curl -fsS -o /dev/null -w "%{http_code}" "https://$APP_DOMAIN/api/auth/me" || echo "000")
+          echo "/api/auth/me -> $ME (401 = correcto, 5xx = roto)"
+          case "$ME" in 5*) echo "::error::5xx — considerá rollback"; exit 1 ;; esac
