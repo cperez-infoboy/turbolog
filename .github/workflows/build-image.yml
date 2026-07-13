@@ -35,6 +35,7 @@ jobs:
         run: |
           IMAGE=ghcr.io/${{ github.repository_owner }}/turbolog
           # dos etiquetas: :latest (la que usa deploy.sh por defecto) y :<sha> (para rollback exacto)
-          docker build -t "$IMAGE:latest" -t "$IMAGE:${{ github.sha }}" backend
+          # context = repo root: el Dockerfile copia frontend/ y backend/, igual que docker-compose.
+          docker build -f backend/Dockerfile -t "$IMAGE:latest" -t "$IMAGE:${{ github.sha }}" .
           docker push "$IMAGE:latest"
           docker push "$IMAGE:${{ github.sha }}"
