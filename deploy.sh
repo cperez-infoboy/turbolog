@@ -6,9 +6,9 @@
 #
 #   1. git push origin main        # GitHub buildea + publica la imagen (auto)
 #   2. esperá ~3-5 min al workflow build-image (tilde verde en Actions)
-#   3. ./deploy.sh                 # deploya :latest al swarm
+#   3. ./deploy.sh                 # deploya el último SHA de main al swarm
 #
-#   ./deploy.sh <sha>              # rollback a un build específico
+#   ./deploy.sh <sha>              # deploya un build específico (rollback)
 #
 # Requisitos: gcloud logueado (`gcloud auth login`). La imagen TIENE que
 # existir en GHCR antes del paso 3; si lo corrés antes, el rollout falla y el
@@ -23,7 +23,19 @@
 # ============================================================================
 set -euo pipefail
 
-TAG="${1:-latest}"
+# Sin argumentos: deploya el último commit de origin/main por SU SHA tag.
+# Swarm NO re-pulle si el image spec no cambia → deployar :latest cuando el
+# servicio ya usa :latest es un no-op silencioso (el rollout "converge" pero
+# no recrea nada). El SHA tag (publicado por build-image.yml junto a :latest)
+# siempre cambia entre commits → Swarm re-resuelve y hace pull real.
+# Con argumento: deploya ese tag/sha exacto (para rollbacks).
+if [[ $# -eq 0 ]]; then
+  git fetch -q origin main 2>/dev/null || true
+  TAG="$(git rev-parse origin/main)"
+  : "${TAG:?No se pudo resolver el SHA de origin/main. Pasá un tag: ./deploy.sh <tag>}"
+else
+  TAG="$1"
+fi
 IMAGE="ghcr.io/cperez-infoboy/turbolog:${TAG}"
 
 # ── Ajustá estos 3 valores a tu swarm (el nombre del manager lo sacás con
