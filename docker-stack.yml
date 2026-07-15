@@ -56,6 +56,7 @@ services:
       - "0.0.0.0"                       # que los otros servicios lo alcancen por la red
       - "--credentials-file"
       - "/run/secrets/cloudsql_sa_key"
+      - "--private-ip"                  # pg-infositio-dev es private-IP-only (misma VPC que el swarm)
       - "dockerswarm-491114:southamerica-west1:pg-infositio-dev"  # connection name de la instancia compartida
     networks: [turbolog-net]
     secrets:
@@ -84,7 +85,7 @@ services:
       REMINDER_TIME: "17:30"
       AUDIT_TIMEZONE: America/Santiago
       NOTIFIER_MODE: telegram
-      TELEGRAM_BOT_USERNAME: TurbologBot
+      TELEGRAM_BOT_USERNAME: infositio_dev_bot
       TELEGRAM_CODE_TTL_SECONDS: "300"
       JWT_EXPIRE_HOURS: "24"
       LLM_BASE_URL: https://api.deepseek.com/v1
@@ -133,7 +134,7 @@ services:
       REMINDER_TIME: "17:30"
       AUDIT_TIMEZONE: America/Santiago
       NOTIFIER_MODE: telegram
-      TELEGRAM_BOT_USERNAME: TurbologBot
+      TELEGRAM_BOT_USERNAME: infositio_dev_bot
       TELEGRAM_CODE_TTL_SECONDS: "300"
       JWT_EXPIRE_HOURS: "24"
       LLM_BASE_URL: https://api.deepseek.com/v1
