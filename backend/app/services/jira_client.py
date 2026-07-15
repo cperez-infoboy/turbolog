@@ -262,9 +262,9 @@ class JiraClient:
         """Fetch tasks assigned to a specific user (or currentUser if None), ordered by most recently updated."""
         if assignee_email:
             account_id = await self._find_account_id(assignee_email)
-            jql = f"assignee={account_id} AND statusCategory != Done ORDER BY updated DESC"
+            jql = f"assignee={account_id} AND statusCategory != Done AND issuetype NOT IN (\"Epic\", \"Épica\") ORDER BY updated DESC"
         else:
-            jql = "assignee=currentUser() ORDER BY updated DESC"
+            jql = "assignee=currentUser() AND issuetype NOT IN (\"Epic\", \"Épica\") ORDER BY updated DESC"
         fields = ["summary", "status", "priority", "project", "updated", "created", "duedate", "description", "comment"]
 
         async with httpx.AsyncClient(timeout=settings.JIRA_REQUEST_TIMEOUT) as client:
