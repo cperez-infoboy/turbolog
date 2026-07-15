@@ -39,3 +39,13 @@ backend/alembic/versions/__pycache__/
 
 # UV lock (optional - uncomment if you want to track it)
 # uv.lock
+
+# GCP deploy — Service Account keys (SECRETS, never commit)
+cloudsql-sa-key.json
+turbolog-deployer-key.json
+*-sa-key.json
+deployer-key.json
+
+# Operador credentials worksheet (SECRETS, never commit)
+docs/credenciales.md
+credenciales*.md

@@ -2,7 +2,7 @@
 # ============================================================================
 # Turbolog — one-time Docker Swarm secrets bootstrap
 # ============================================================================
-# Run ONCE on a Swarm manager. Creates the 8 versioned secrets (`_v1`) that
+# Run ONCE on a Swarm manager. Creates the 7 versioned secrets (`_v1`) that
 # docker-stack.yml.tmpl references as `external: true`.
 #
 # The operator supplies each secret value via a secure prompt (echo disabled
@@ -29,10 +29,12 @@
 # makes the field-named file vanish and pydantic falls back to its insecure
 # default — the very failure `assert_prod_secrets` exists to catch.
 #
-# The 8 genuine secrets (lowercase, underscore — these are the pydantic field
+# The 7 genuine secrets (lowercase, underscore — these are the pydantic field
 # names AND the Swarm source base names, versioned with `_v1`):
 #   database_url google_client_secret jwt_secret jira_api_token
-#   llm_api_key telegram_bot_token cloudsql_sa_key cloudflare_token
+#   llm_api_key telegram_bot_token cloudsql_sa_key
+# NOTE: the Cloudflare tunnel token is NOT here — Turbolog reuses the swarm's
+# shared `cf` tunnel (no dedicated cloudflared service, no CLOUDFLARE_TOKEN).
 # ============================================================================
 
 set -eu
@@ -47,7 +49,7 @@ fi
 # Restore terminal echo no matter how we exit (in case read is interrupted).
 trap '[ -t 0 ] && stty echo 2>/dev/null || true' EXIT
 
-printf '%s\n' "Turbolog Swarm secrets bootstrap — creating 8 *_v1 secrets."
+printf '%s\n' "Turbolog Swarm secrets bootstrap — creating 7 *_v1 secrets."
 printf '%s\n' "Re-runs skip secrets that already exist (|| true on each create)."
 printf '%s\n\n' "Line inputs are hidden. NEVER commit real values."
 
@@ -90,7 +92,6 @@ read_secret_line jira_api_token_v1      "JIRA_API_TOKEN"
 read_secret_line llm_api_key_v1         "LLM_API_KEY (empty is valid — feature disabled)"
 read_secret_line telegram_bot_token_v1  "TELEGRAM_BOT_TOKEN"
 read_secret_file cloudsql_sa_key_v1     "CLOUDSQL_SA_KEY (Cloud SQL service-account JSON)"
-read_secret_line cloudflare_token_v1    "CLOUDFLARE_TOKEN (Cloudflare Tunnel token)"
 
 printf '\n%s\n' "Done."
 printf '%s\n' "Verify:   docker secret ls | grep '_v1'"

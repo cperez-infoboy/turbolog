@@ -1,32 +1,38 @@
 # ============================================================================
 # Turbolog — Docker Swarm stack  (VERSIÓN SIMPLE)
 # ============================================================================
-# Este archivo describe los 4 servicios que corren en el swarm. Se despliega
-# UNA sola vez; después, para subir una nueva versión, usás ./deploy.sh
+# Este archivo describe los 3 servicios de Turbolog que corren en el swarm. Se
+# despliega UNA sola vez; después, para subir una nueva versión, usás ./deploy.sh
 # (no volvés a tocar este archivo).
 #
 # PRIMER DEPLOY (una sola vez):
-#   1. Completá los valores marcados "TODO operador" más abajo.
-#   2. Creá los 8 secretos:   bash scripts/create-secrets.sh
-#   3. Subí y desplegá:
+#   1. Creá los 7 secretos:   bash scripts/create-secrets.sh
+#   2. Subí y desplegá:
 #        gcloud compute scp docker-stack.yml <MANAGER>:~/
 #        gcloud compute ssh <MANAGER> -- docker stack deploy -c ~/docker-stack.yml turbolog
 #
 # La imagen la arma GitHub solo (ver .github/workflows/build-image.yml) y vive
 # en ghcr.io/cperez-infoboy/turbolog. El swarm la descarga de ahí.
 #
-# Por qué 4 servicios:
+# Por qué 3 servicios:
 #   auth-proxy  → puente seguro a la base Cloud SQL (gestionada).
 #   backend     → la app FastAPI + el frontend. UNA réplica (el bot de Telegram
 #                 y el store de códigos no toleran más de una).
 #   scheduler   → los recordatorios de las 17:30. UNA réplica, en el manager.
-#   cloudflared → el túnel de Cloudflare que expone la app con HTTPS.
+#
+# NOTA sobre el túnel de Cloudflare: Turbolog NO trae su propio cloudflared.
+# Reusamos el túnel global del swarm (stack `cf`, servicio `cf_tunnel`), que ya
+# expone las otras apps. En Cloudflare → Zero Trust → Tunnels → ese túnel →
+# Public Hostnames, agregás `turbolog.tudominio.cl → http://turbolog_backend:8000`.
+# Por eso `backend` se conecta a la red compartida `cf-tunnel_mi-red-swarm`.
 # ============================================================================
 
 networks:
   turbolog-net:                 # red interna del swarm por la que se hablan
     driver: overlay
     attachable: true
+  cf-tunnel_mi-red-swarm:       # red del stack cf — la usan las apps publicadas
+    external: true              # ya existe (la creó el stack cf); no la creamos acá
 
 # --- Secretos (valores sensibles). Los creás con scripts/create-secrets.sh) ---
 # El "target" es el nombre interno que pydantic espera; el "_v1" es el nombre
@@ -39,7 +45,6 @@ secrets:
   llm_api_key_v1:          { external: true }
   telegram_bot_token_v1:   { external: true }
   cloudsql_sa_key_v1:      { external: true }
-  cloudflare_token_v1:     { external: true }
 
 services:
 
@@ -51,7 +56,7 @@ services:
       - "0.0.0.0"                       # que los otros servicios lo alcancen por la red
       - "--credentials-file"
       - "/run/secrets/cloudsql_sa_key"
-      - "dockerswarm-491114:southamerica-west1:turbolog"  # TODO operador: tu Cloud SQL connection name
+      - "dockerswarm-491114:southamerica-west1:pg-infositio-dev"  # connection name de la instancia compartida
     networks: [turbolog-net]
     secrets:
       - { source: cloudsql_sa_key_v1, target: cloudsql_sa_key }
@@ -67,15 +72,15 @@ services:
     environment:
       SERVE_STATIC: "true"
       STATIC_DIR: /app/static
-      APP_URL: https://turbolog.example.com          # TODO operador: tu dominio Cloudflare (con https)
-      CORS_ORIGINS: https://turbolog.example.com      # TODO operador: igual que APP_URL
+      APP_URL: https://tlog.infositio.dev
+      CORS_ORIGINS: https://tlog.infositio.dev
       ENABLE_SCHEDULER: "false"                       # el reloj lo maneja el servicio "scheduler"
-      GOOGLE_CLIENT_ID: xxx.apps.googleusercontent.com  # TODO operador
-      JIRA_EMAIL: admin@yourcompany.com               # TODO operador
-      JIRA_DOMAIN: yourcompany.atlassian.net          # TODO operador
+      GOOGLE_CLIENT_ID: 315773156890-240u0s8d9opj07uk7lrmfo59rtktjmvh.apps.googleusercontent.com
+      JIRA_EMAIL: claudio@infositio.cl
+      JIRA_DOMAIN: infositio.atlassian.net
       JIRA_CACHE_TTL: "300"
       JIRA_REQUEST_TIMEOUT: "10"
-      ADMIN_EMAILS: admin@yourcompany.com             # TODO operador
+      ADMIN_EMAILS: claudio@infositio.cl,msilva@infositio.cl
       REMINDER_TIME: "17:30"
       AUDIT_TIMEZONE: America/Santiago
       NOTIFIER_MODE: telegram
@@ -87,7 +92,7 @@ services:
       LLM_TIMEOUT: "30"
       LLM_MAX_TOKENS: "4096"
       LLM_THINKING: disabled
-    networks: [turbolog-net]
+    networks: [turbolog-net, cf-tunnel_mi-red-swarm]  # 2 redes: auth-proxy por turbolog-net, el túnel cf por cf-tunnel_mi-red-swarm
     secrets:
       - { source: database_url_v1, target: database_url }
       - { source: google_client_secret_v1, target: google_client_secret }
@@ -96,7 +101,6 @@ services:
       - { source: llm_api_key_v1, target: llm_api_key }
       - { source: telegram_bot_token_v1, target: telegram_bot_token }
       - { source: cloudsql_sa_key_v1, target: cloudsql_sa_key }
-      - { source: cloudflare_token_v1, target: cloudflare_token }
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health/ready').read()\""]
       interval: 30s
@@ -118,14 +122,14 @@ services:
       ENABLE_SCHEDULER: "true"
       SERVE_STATIC: "true"
       STATIC_DIR: /app/static
-      APP_URL: https://turbolog.example.com          # TODO operador: tu dominio Cloudflare
-      CORS_ORIGINS: https://turbolog.example.com
-      GOOGLE_CLIENT_ID: xxx.apps.googleusercontent.com
-      JIRA_EMAIL: admin@yourcompany.com
-      JIRA_DOMAIN: yourcompany.atlassian.net
+      APP_URL: https://tlog.infositio.dev
+      CORS_ORIGINS: https://tlog.infositio.dev
+      GOOGLE_CLIENT_ID: 315773156890-240u0s8d9opj07uk7lrmfo59rtktjmvh.apps.googleusercontent.com
+      JIRA_EMAIL: claudio@infositio.cl
+      JIRA_DOMAIN: infositio.atlassian.net
       JIRA_CACHE_TTL: "300"
       JIRA_REQUEST_TIMEOUT: "10"
-      ADMIN_EMAILS: admin@yourcompany.com
+      ADMIN_EMAILS: claudio@infositio.cl,msilva@infositio.cl
       REMINDER_TIME: "17:30"
       AUDIT_TIMEZONE: America/Santiago
       NOTIFIER_MODE: telegram
@@ -146,7 +150,6 @@ services:
       - { source: llm_api_key_v1, target: llm_api_key }
       - { source: telegram_bot_token_v1, target: telegram_bot_token }
       - { source: cloudsql_sa_key_v1, target: cloudsql_sa_key }
-      - { source: cloudflare_token_v1, target: cloudflare_token }
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import os; os.kill(1, 0)\""]
       interval: 30s
@@ -157,17 +160,4 @@ services:
       replicas: 1
       placement: { constraints: [node.role == manager] }
       update_config: { parallelism: 1, order: stop-first }
-    logging: { driver: json-file, options: { max-size: "10m", max-file: "3" } }
-
-  # ── cloudflared: túnel Cloudflare (HTTPS hacia internet) ───────────────────
-  cloudflared:
-    image: cloudflare/cloudflared:latest
-    command:
-      - "/bin/sh"
-      - "-c"
-      - "export TUNNEL_TOKEN=$(cat /run/secrets/cloudflare_token); exec cloudflared tunnel --no-autoupdate run"
-    networks: [turbolog-net]
-    secrets:
-      - { source: cloudflare_token_v1, target: cloudflare_token }
-    deploy: { replicas: 1 }
     logging: { driver: json-file, options: { max-size: "10m", max-file: "3" } }

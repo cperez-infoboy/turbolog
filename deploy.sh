@@ -17,7 +17,7 @@ IMAGE="ghcr.io/cperez-infoboy/turbolog:${TAG}"
 
 # ── Ajustá estos 3 valores a tu swarm (el nombre del manager lo sacás con
 #    `gcloud compute instances list`). ────────────────────────────────────────
-MANAGER="NOMBRE_DEL_MANAGER"          # TODO operador: nombre de tu nodo manager
+MANAGER="swarm-node-1"                 # nodo manager (Reachable); cualquier manager sirve para service update
 ZONE="southamerica-west1-a"
 PROJECT="dockerswarm-491114"
 

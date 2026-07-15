@@ -103,9 +103,11 @@ registrar su clave y el deploy falla.
   workflow**. El deploy **no** se dispara solo al pushear — eso es a
   propósito, para que tengas el control de cuándo llega a prod.
 
-En el swarm corren **4 servicios**: `auth-proxy` (puente a la base Cloud SQL),
-`backend` (la app FastAPI + frontend), `scheduler` (recordatorios 17:30) y
-`cloudflared` (tu HTTPS público vía túnel de Cloudflare).
+En el swarm corren **3 servicios** de Turbolog: `auth-proxy` (puente a la base
+Cloud SQL), `backend` (la app FastAPI + frontend) y `scheduler` (recordatorios
+17:30). El HTTPS público va por el **túnel de Cloudflare compartido**
+(`cf_tunnel`), que ya corre en el swarm para las otras apps — no es un servicio
+de Turbolog, se configura una sola vez en el Paso 2.
 
 > ¿Y `deploy.sh`? Queda como **fallback manual** — por si GitHub Actions no
 > está disponible o querés deployar desde tu terminal. Lo documentamos al
@@ -247,25 +249,37 @@ gcloud iam service-accounts keys create cloudsql-sa-key.json \
   --iam-account=turbolog-cloudsql@dockerswarm-491114.iam.gserviceaccount.com
 ```
 **Anotá esto:** te quedó un archivo **`cloudsql-sa-key.json`** en tu notebook.
-Guardalo — es uno de los 8 secretos del swarm.
+Guardalo — es uno de los 7 secretos del swarm.
 
 ---
 
 ### Paso 2 — El túnel de Cloudflare (tu HTTPS) ☁️
 
-Esto expone tu app a internet con HTTPS, sin abrir puertos en el swarm. El
-contenedor `cloudflared` del swarm se conecta a Cloudflare por un túnel
-saliente.
+Esto expone tu app a internet con HTTPS, sin abrir puertos en el swarm. **No
+creás un túnel nuevo** — el swarm ya tiene un túnel global corriendo (el stack
+`cf`, servicio `cf_tunnel`) que expone las otras apps. Turbolog se suma a ese
+mismo túnel agregándole un **public hostname**. Sin nuevo contenedor, sin nuevo
+secreto, sin mantener otro `cloudflared`.
 
-1. Entrá a **Cloudflare → Zero Trust → Networks → Tunnels → Create a tunnel**.
-2. Elegí **Cloudflared**, dale un nombre (ej: `turbolog`), y copiá el **token**
-   que te muestra.
-   **Anotá esto:** 🔑 el **token del túnel**.
-3. En el paso de **Public Hostnames**, agregá:
-   - un subdominio (ej: `turbolog.tuempresa.cl`),
-   - que apunte al servicio `http://backend:8000`.
+1. Entrá a **Cloudflare → Zero Trust → Networks → Tunnels**.
+2. Abrí el túnel que ya usan las otras apps (el que corre como `cf_tunnel` en
+   el swarm) → pestaña **Public Hostnames** → **Add a public hostname**.
+3. Completá:
+   - **Subdomain**: `turbolog` (o el que quieros).
+   - **Domain**: tu dominio de Cloudflare (ej: `tuempresa.cl`).
+   - **Service**: `HTTP` → `turbolog_backend:8000`
+     (el `turbolog_backend` es el nombre cross-stack del servicio dentro del
+     swarm; el `:8000` es el puerto interno del backend. NO uses `backend:8000`
+     solo — el túnel vive en otro stack y no lo resolvería).
    **Anotá esto:** 🔑 tu **dominio** (`https://turbolog.tuempresa.cl`).
    (Cloudflare configura el DNS solo.)
+
+> ¿Por qué `turbolog_backend` y no `backend`? Docker Swarm nombra los servicios
+> en una red compartida como `<stack>_<servicio>`. El túnel `cf` corre en el
+> stack `cf`; para alcanzar el backend de Turbolog (stack `turbolog`) usa el
+> nombre completo. Por eso `backend` se conecta a la red `cf-tunnel_mi-red-swarm`
+> (la red del stack `cf` donde viven las apps publicadas) en
+> `docker-stack.yml` — es la red que el túnel comparte con el resto de las apps.
 
 ---
 
@@ -329,7 +343,7 @@ nodos del swarm la descarguen sin autenticarse):
 
 ---
 
-### Paso 7 — Cargar los 8 secretos en el swarm 🔑
+### Paso 7 — Cargar los 7 secretos en el swarm 🔑
 
 Los secretos son los valores sensibles (passwords, tokens, keys). Se cargan
 **una vez** en el swarm y después no se tocan.
@@ -358,15 +372,14 @@ Te va a pedir:
 | `LLM_API_KEY` | tu key de DeepSeek (o vacío si no usás /improve) |
 | `TELEGRAM_BOT_TOKEN` | el token de @BotFather (el de hoy) |
 | `CLOUDSQL_SA_KEY` | la **ruta al archivo**: `~/cloudsql-sa-key.json` |
-| `CLOUDFLARE_TOKEN` | el token del túnel del Paso 2 |
 
-Verificá: `docker secret ls | grep _v1` → deben aparecer los 8.
+Verificá: `docker secret ls | grep _v1` → deben aparecer los 7.
 
 ---
 
 ### Paso 8 — Desplegar el stack (una sola vez) 🏗️
 
-Subí el stack al manager y desplegá — el swarm levanta los 4 servicios y
+Subí el stack al manager y desplegá — el swarm levanta los 3 servicios y
 descarga la imagen de GitHub:
 ```bash
 # desde tu notebook
@@ -379,8 +392,8 @@ gcloud compute ssh $MANAGER --tunnel-through-iap -- docker stack deploy -c ~/doc
 ### Paso 9 — Verificar que anda ✅
 
 ```bash
-# los 4 servicios deben estar "replicas 1/1"
-gcloud compute ssh $MANAGER -- docker service ls
+# los 3 servicios de Turbolog deben estar "replicas 1/1"
+gcloud compute ssh $MANAGER -- docker service ls | grep turbolog
 
 # la app responde por tu dominio
 curl https://turbolog.tuempresa.cl/api/health      # → {"status":"ok"}
@@ -618,7 +631,7 @@ pueden bajar la imagen sin autenticarse.
 
 **Ver el estado del swarm** (siempre útil):
 ```bash
-gcloud compute ssh $MANAGER -- docker service ls                              # estado de los 4 servicios
+gcloud compute ssh $MANAGER -- docker service ls | grep turbolog                # estado de los 3 servicios
 gcloud compute ssh $MANAGER -- docker service logs turbolog_backend --tail 50 # logs del backend
 gcloud compute ssh $MANAGER -- docker stack ps turbolog --no-trunc           # qué contenedor falla
 ```
