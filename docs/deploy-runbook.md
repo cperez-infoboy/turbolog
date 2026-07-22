@@ -557,12 +557,21 @@ Una vez hecho el setup de arriba, deployar es esto:
    en la columna de la izquierda.
 
 3. Click **"Run workflow"** → se abre un menú desplegable → dejá `image_tag`
-   como `latest` (es el default) → click en el botón verde **"Run workflow"**.
+   **vacío** (es el default; resuelve al SHA actual de `main`) → click en el
+   botón verde **"Run workflow"**.
 
 4. Mirá el job: bolita amarilla (corriendo) → ✓ verde (listo) o ✗ rojo (falló).
    Hacé click en el run para ver el log paso por paso.
 
 5. Listo — el swarm bajó la imagen nueva y reinició `backend` + `scheduler`.
+
+> **¿Por qué vacío y no `:latest`?** Swarm corre
+> `docker service update --image`. Si el servicio ya dice `:latest` y le pasás
+> `:latest` otra vez, Swarm **no ve cambio** en el spec → no hace re-pull →
+> deploy silencioso que no deploya nada (bug que se arrastró hasta fixearse en
+> `dde9a82` para `deploy.sh` y `667a2a0` para el workflow). Un SHA siempre
+> cambia el spec → fuerza pull real. Por eso el default es vacío (= SHA de
+> `main`), y un SHA explícito sirve para rollbacks.
 
 El workflow `deploy` hace esto por vos, sin que toques nada:
 1. Se autentica como la SA `turbolog-deployer` (con el secret `GCP_SA_KEY`).
@@ -575,7 +584,7 @@ El workflow `deploy` hace esto por vos, sin que toques nada:
 > **Alternativa manual (fallback):** si GitHub Actions no está disponible, o
 > querés deployar desde tu terminal:
 > ```bash
-> ./deploy.sh              # instala :latest
+> ./deploy.sh              # instala el SHA de origin/main
 > ./deploy.sh <sha>        # instala un tag específico (rollback)
 > ```
 
@@ -625,8 +634,8 @@ pueden bajar la imagen sin autenticarse.
 
 **Deployar a mano como fallback** (si GitHub Actions no anda):
 ```bash
-./deploy.sh              # latest
-./deploy.sh <sha>        # tag específico
+./deploy.sh              # SHA de origin/main
+./deploy.sh <sha>        # tag específico (rollback)
 ```
 
 **Ver el estado del swarm** (siempre útil):
@@ -647,7 +656,8 @@ git push          # GitHub arma la imagen nueva (tarda unos minutos)
 ```
 
 1. **Esperá a que termine el build** en la pestaña *Actions* (workflow
-   `build-image`, bolita verde ✓). Si deployás antes de que termine, el swarm
-   se baja la imagen `:latest` vieja y no ves tu cambio.
-2. **Click "Run workflow"** en el workflow `deploy` → dejá `latest`.
+   `build-image`, bolita verde ✓). Si deployás antes de que termine, el tag
+   SHA todavía no existe en GHCR → el deploy falla con *image not found*.
+2. **Click "Run workflow"** en el workflow `deploy` → dejá `image_tag` vacío
+   (deploya el SHA de `main`).
 3. Mirá el smoke — si da ✓ verde, ya estás en producción.
