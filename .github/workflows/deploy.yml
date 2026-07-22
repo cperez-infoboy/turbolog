@@ -25,9 +25,9 @@ on:
   workflow_dispatch:
     inputs:
       image_tag:
-        description: "Tag a deployar (default: latest; poné un SHA para rollback)"
+        description: "Tag a deployar (vacío = SHA actual de main; pegá un SHA para rollback)"
         required: false
-        default: "latest"
+        default: ""
         type: string
 
 # No cancelar un deploy en curso — dos deploys solapados se pisan y rompen.
@@ -69,7 +69,16 @@ jobs:
 
       - name: Resolve image tag
         id: tag
-        run: echo "tag=${{ inputs.image_tag }}" >> "$GITHUB_OUTPUT"
+        run: |
+          # Vacío => SHA del commit sobre el que corre el workflow (HEAD de main
+          # en un dispatch). Un SHA siempre cambia el spec del servicio vs. el
+          # deploy anterior => Swarm re-resuelve y hace pull real. :latest NO lo
+          # hace si el servicio ya usa :latest (no-op silencioso, ver commit
+          # dde9a82 que fixeó lo mismo en deploy.sh).
+          TAG="${{ inputs.image_tag }}"
+          if [ -z "$TAG" ]; then TAG="${{ github.sha }}"; fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Deploy tag: $TAG"
 
       # El deploy propiamente: lo mismo que deploy.sh, vía túnel IAP.
       # Actualiza backend y scheduler a la imagen pedida. El swarm la descarga
