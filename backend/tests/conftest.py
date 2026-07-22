@@ -72,6 +72,11 @@ class _JiraFake:
         self._per_key: dict[str, object] = {}
         self._default_side_effect: object = None
         self.call_log: list[tuple[str, str]] = []
+        # transition_to_done support (deferred-close feature).
+        self.transition_return_name: str = "Done"
+        self._transition_per_key: dict[str, object] = {}
+        self._transition_default_side_effect: object = None
+        self.transition_call_log: list[str] = []
 
     def set_default_side_effect(self, se) -> None:
         """Set the side effect applied when no per-key override matches."""
@@ -91,6 +96,25 @@ class _JiraFake:
         if callable(se):
             return se(issue_key, comment_text)
         return self.add_comment_return_id
+
+    def set_transition_default_side_effect(self, se) -> None:
+        """Set the side effect applied when no per-key transition override matches."""
+        self._transition_default_side_effect = se
+
+    def set_transition_per_key(self, issue_key: str, se) -> None:
+        """Override transition_to_done behavior for a single issue key only."""
+        self._transition_per_key[issue_key] = se
+
+    async def transition_to_done(self, issue_key: str) -> str:
+        self.transition_call_log.append(issue_key)
+        se = self._transition_per_key.get(issue_key, self._transition_default_side_effect)
+        if se is None:
+            return self.transition_return_name
+        if isinstance(se, Exception):
+            raise se
+        if callable(se):
+            return se(issue_key)
+        return self.transition_return_name
 
 
 @pytest.fixture

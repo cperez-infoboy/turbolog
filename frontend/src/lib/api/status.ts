@@ -8,6 +8,8 @@ export interface StatusReport {
 	created_at?: string;
 	updated_at: string;
 	jira_comment_id?: string | null;
+	pending_close: boolean;
+	closed_at: string | null;
 }
 
 export interface StatusReportWithSummary {
@@ -18,6 +20,8 @@ export interface StatusReportWithSummary {
 	date: string;
 	updated_at: string;
 	jira_comment_id?: string | null;
+	pending_close: boolean;
+	closed_at: string | null;
 }
 
 export interface DayReports {

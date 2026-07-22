@@ -15,11 +15,13 @@ Covers:
 - Bad date payload (non-string / missing) -> 400, not 500.
 """
 import secrets
+from datetime import datetime, timedelta, timezone
 
 import httpx
 import pytest
 from sqlalchemy import select, delete
 
+from app.config import settings
 from app.dependencies import get_jira_client
 from app.models.daily_closure import DailyClosure
 from app.models.status_report import StatusReport
@@ -36,7 +38,16 @@ def _report_payload(task_key: str, date: str, content: str = "did some work") ->
     return {"task_key": task_key, "date": date, "content": content}
 
 
-async def _seed_report(session_factory, user_id, task_key, date, content="x", jira_comment_id=None):
+async def _seed_report(
+    session_factory,
+    user_id,
+    task_key,
+    date,
+    content="x",
+    jira_comment_id=None,
+    pending_close=False,
+    closed_at=None,
+):
     """Insert a StatusReport directly via the ORM and return its id."""
     async with session_factory() as s:
         report = StatusReport(
@@ -46,6 +57,8 @@ async def _seed_report(session_factory, user_id, task_key, date, content="x", ji
             report_date=date,
             content=content,
             jira_comment_id=jira_comment_id,
+            pending_close=pending_close,
+            closed_at=closed_at,
         )
         s.add(report)
         await s.commit()
@@ -59,16 +72,26 @@ async def _seed_task(
     summary="some task",
     status="In Progress",
     status_category="indeterminate",
+    fetched_at=None,
 ):
-    """Insert a Task cache row directly via the ORM and return its id."""
+    """Insert a Task cache row directly via the ORM and return its id.
+
+    fetched_at defaults to now (the model default) so seeded tasks are fresh
+    and count toward finalize validation. Pass an explicit stale ISO timestamp
+    to simulate a task JIRA has dropped (Done/unassigned) whose cache row was
+    never reconciled.
+    """
     async with session_factory() as s:
-        task = Task(
+        kwargs = dict(
             user_id=user_id,
             jira_key=jira_key,
             summary=summary,
             status=status,
             status_category=status_category,
         )
+        if fetched_at is not None:
+            kwargs["fetched_at"] = fetched_at
+        task = Task(**kwargs)
         s.add(task)
         await s.commit()
         await s.refresh(task)
@@ -149,6 +172,49 @@ class TestFinalizeHappyPath:
     async def test_empty_date_returns_400(self, client, jira_fake):
         resp = await client.post("/api/status/finalize", json={"date": "  "})
         assert resp.status_code == 400
+
+
+# --------------------------------------------------------------------------- #
+# Stale-cache freshness gate
+# --------------------------------------------------------------------------- #
+
+
+class TestFinalizeStaleTaskGate:
+    """The validation must only enforce status for tasks the cache still
+    vouches for (fetched_at within JIRA_CACHE_TTL). A task JIRA has since
+    dropped (Done / unassigned) is never re-fetched, so its row stays
+    "indeterminate" with a stale fetched_at and is invisible to the client.
+    Without the freshness gate such a row blocks finalize forever.
+    """
+
+    async def test_fresh_in_progress_without_report_blocks(self, client, session_factory, test_user):
+        date = "2026-06-22"
+        # Fresh indeterminate task, no report -> must block.
+        await _seed_task(session_factory, test_user.id, "PROJ-1")
+
+        resp = await client.post("/api/status/finalize", json={"date": date})
+
+        assert resp.status_code == 422, resp.text
+        body = resp.json()
+        assert body["finalized"] is False
+        assert [m["task_key"] for m in body["missing"]] == ["PROJ-1"]
+
+    async def test_stale_in_progress_without_report_does_not_block(
+        self, client, session_factory, test_user, jira_fake
+    ):
+        date = "2026-06-22"
+        # Fresh, covered task -> counts and is satisfied.
+        await _seed_task(session_factory, test_user.id, "PROJ-1")
+        await _seed_report(session_factory, test_user.id, "PROJ-1", date, content="worked")
+        # Stale indeterminate task JIRA dropped, no report -> must NOT block.
+        stale = (datetime.now(timezone.utc) - timedelta(seconds=settings.JIRA_CACHE_TTL * 2)).isoformat()
+        await _seed_task(session_factory, test_user.id, "PROJ-2", fetched_at=stale)
+        jira_fake.add_comment_return_id = "cmt-ok"
+
+        resp = await client.post("/api/status/finalize", json={"date": date})
+
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["finalized"] is True
 
 
 # --------------------------------------------------------------------------- #
@@ -397,6 +463,31 @@ class TestGetReportsShape:
         body = resp.json()
         assert "reports" in body and "finalized" in body and "finalized_at" in body
 
+    async def test_get_includes_pending_close_and_closed_at(
+        self, client, session_factory, test_user
+    ):
+        """GET /api/status response reports carry pending_close and closed_at."""
+        date = "2026-06-22"
+        await _seed_report(
+            session_factory,
+            test_user.id,
+            "PROJ-1",
+            date,
+            content="x",
+            pending_close=True,
+            closed_at="2026-06-22T18:00:00+00:00",
+        )
+        await _seed_report(session_factory, test_user.id, "PROJ-2", date, content="y")
+
+        resp = await client.get("/api/status", params={"date": date})
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        by_key = {r["task_key"]: r for r in body["reports"]}
+        assert by_key["PROJ-1"]["pending_close"] is True
+        assert by_key["PROJ-1"]["closed_at"] == "2026-06-22T18:00:00+00:00"
+        assert by_key["PROJ-2"]["pending_close"] is False
+        assert by_key["PROJ-2"]["closed_at"] is None
+
 
 # --------------------------------------------------------------------------- #
 # Mutex claim-first (FIX 1)
@@ -635,3 +726,331 @@ class TestFinalizeStatusCoverage:
         assert len(body["missing"]) == 1
         assert body["missing"][0]["task_key"] == "PROJ-1"
         assert jira_fake.call_log == []
+
+
+# --------------------------------------------------------------------------- #
+# Deferred close — finalize triggers JIRA transitions for pending_close
+# --------------------------------------------------------------------------- #
+
+
+class TestFinalizeDeferredClose:
+    """finalize_day executes deferred JIRA transitions for reports flagged
+    pending_close, alongside posting comments."""
+
+    async def test_pending_close_transitions_and_mirrors_task(
+        self, client, session_factory, test_user, jira_fake
+    ):
+        """A report with pending_close=True is transitioned to Done during
+        finalize, closed_at is set, and the Task cache is mirrored to
+        status_category='done'. Comment is also posted. Returns 200."""
+        date = "2026-06-22"
+        await _seed_task(
+            session_factory, test_user.id, "PROJ-1", status_category="indeterminate"
+        )
+        await _seed_report(
+            session_factory,
+            test_user.id,
+            "PROJ-1",
+            date,
+            content="did work",
+            pending_close=True,
+        )
+
+        # Use a non-"Done" return name to prove the mirror uses the
+        # returned status_name, not a hardcoded literal.
+        jira_fake.transition_return_name = "Closed"
+
+        resp = await client.post("/api/status/finalize", json={"date": date})
+
+        assert resp.status_code == 200, resp.text
+        # Comment was posted.
+        assert len(jira_fake.call_log) == 1
+        assert jira_fake.call_log[0][0] == "PROJ-1"
+        # Transition was called.
+        assert jira_fake.transition_call_log == ["PROJ-1"]
+
+        async with session_factory() as s:
+            r = (
+                await s.execute(
+                    select(StatusReport).where(StatusReport.task_key == "PROJ-1")
+                )
+            ).scalar_one()
+            assert r.closed_at is not None
+            assert r.jira_comment_id is not None
+
+            t = (
+                await s.execute(select(Task).where(Task.jira_key == "PROJ-1"))
+            ).scalar_one()
+            assert t.status_category == "done"
+            assert t.status == "Closed"
+
+    async def test_idempotent_retry_skips_closed_and_commented(
+        self, client, session_factory, test_user, jira_fake
+    ):
+        """A report with closed_at set is NOT re-transitioned; a report with
+        jira_comment_id is NOT re-commented. Only unfinished work runs."""
+        date = "2026-06-22"
+        # PROJ-1: already fully done (has both comment + close).
+        await _seed_task(
+            session_factory, test_user.id, "PROJ-1", status_category="indeterminate"
+        )
+        await _seed_report(
+            session_factory,
+            test_user.id,
+            "PROJ-1",
+            date,
+            content="done already",
+            jira_comment_id="old-cmt",
+            closed_at="2026-06-21T17:00:00+00:00",
+            pending_close=True,
+        )
+        # PROJ-2: needs both comment and transition.
+        await _seed_task(
+            session_factory, test_user.id, "PROJ-2", status_category="indeterminate"
+        )
+        await _seed_report(
+            session_factory,
+            test_user.id,
+            "PROJ-2",
+            date,
+            content="needs close",
+            pending_close=True,
+        )
+
+        resp = await client.post("/api/status/finalize", json={"date": date})
+
+        assert resp.status_code == 200, resp.text
+        # Only PROJ-2 got a comment (PROJ-1 already has jira_comment_id).
+        assert len(jira_fake.call_log) == 1
+        assert jira_fake.call_log[0][0] == "PROJ-2"
+        # Only PROJ-2 got transitioned (PROJ-1 already has closed_at).
+        assert jira_fake.transition_call_log == ["PROJ-2"]
+
+    async def test_transition_failure_returns_502_and_unlocks_day(
+        self, client, session_factory, test_user, jira_fake
+    ):
+        """When a transition raises, finalize returns 502, the day is unlocked
+        (no DailyClosure), prior successes keep their closed_at/jira_comment_id,
+        and the failed entry carries action='close'."""
+        date = "2026-06-22"
+        await _seed_task(
+            session_factory, test_user.id, "PROJ-1", status_category="indeterminate"
+        )
+        await _seed_task(
+            session_factory, test_user.id, "PROJ-2", status_category="indeterminate"
+        )
+        await _seed_report(
+            session_factory,
+            test_user.id,
+            "PROJ-1",
+            date,
+            content="first",
+            pending_close=True,
+        )
+        await _seed_report(
+            session_factory,
+            test_user.id,
+            "PROJ-2",
+            date,
+            content="second",
+            pending_close=True,
+        )
+
+        # Comments succeed for both; PROJ-1 transition succeeds, PROJ-2 raises.
+        jira_fake.set_transition_per_key("PROJ-2", JiraError("transition boom"))
+
+        resp = await client.post("/api/status/finalize", json={"date": date})
+
+        assert resp.status_code == 502, resp.text
+        body = resp.json()
+        assert body["finalized"] is False
+        assert len(body["failed"]) == 1
+        failed_entry = body["failed"][0]
+        assert failed_entry["task_key"] == "PROJ-2"
+        assert failed_entry["action"] == "close"
+        assert "transition boom" in failed_entry["error"]
+
+        # Day is unlocked.
+        async with session_factory() as s:
+            result = await s.execute(select(DailyClosure))
+            assert result.scalar_one_or_none() is None
+
+        # PROJ-1 retains both comment_id and closed_at.
+        async with session_factory() as s:
+            r1 = (
+                await s.execute(
+                    select(StatusReport).where(StatusReport.task_key == "PROJ-1")
+                )
+            ).scalar_one()
+            assert r1.jira_comment_id is not None
+            assert r1.closed_at is not None
+
+            # PROJ-2 has comment_id (comment loop succeeded) but no closed_at.
+            r2 = (
+                await s.execute(
+                    select(StatusReport).where(StatusReport.task_key == "PROJ-2")
+                )
+            ).scalar_one()
+            assert r2.jira_comment_id is not None
+            assert r2.closed_at is None
+
+    async def test_close_skipped_when_comment_failed(
+        self, client, session_factory, test_user, jira_fake
+    ):
+        """When the comment POST fails for a pending_close task, the JIRA
+        transition is NOT attempted (deferred to retry). Response is 502,
+        closed_at stays None, day is unlocked."""
+        date = "2026-06-22"
+        await _seed_task(
+            session_factory, test_user.id, "PROJ-1", status_category="indeterminate"
+        )
+        await _seed_report(
+            session_factory,
+            test_user.id,
+            "PROJ-1",
+            date,
+            content="did work",
+            pending_close=True,
+        )
+        # Comment raises; transition would succeed if called.
+        jira_fake.set_per_key("PROJ-1", JiraError("comment boom"))
+
+        resp = await client.post("/api/status/finalize", json={"date": date})
+
+        assert resp.status_code == 502, resp.text
+        body = resp.json()
+        assert body["finalized"] is False
+        assert len(body["failed"]) == 1
+        assert body["failed"][0]["task_key"] == "PROJ-1"
+        assert "comment boom" in body["failed"][0]["error"]
+
+        # Transition was NOT called (jira_comment_id guard).
+        assert jira_fake.transition_call_log == []
+
+        async with session_factory() as s:
+            r = (
+                await s.execute(
+                    select(StatusReport).where(StatusReport.task_key == "PROJ-1")
+                )
+            ).scalar_one()
+            assert r.closed_at is None
+            assert r.jira_comment_id is None
+
+            # Day unlocked.
+            result = await s.execute(select(DailyClosure))
+            assert result.scalar_one_or_none() is None
+
+    async def test_no_transition_when_no_pending_close(
+        self, client, session_factory, test_user, jira_fake
+    ):
+        """Reports without pending_close are commented normally but NOT
+        transitioned."""
+        date = "2026-06-22"
+        await _seed_task(
+            session_factory, test_user.id, "PROJ-1", status_category="indeterminate"
+        )
+        await _seed_task(
+            session_factory, test_user.id, "PROJ-2", status_category="indeterminate"
+        )
+        await _seed_report(
+            session_factory, test_user.id, "PROJ-1", date, content="work one",
+        )
+        await _seed_report(
+            session_factory, test_user.id, "PROJ-2", date, content="work two",
+        )
+
+        resp = await client.post("/api/status/finalize", json={"date": date})
+
+        assert resp.status_code == 200, resp.text
+        # Comments posted for both.
+        assert len(jira_fake.call_log) == 2
+        # No transitions.
+        assert jira_fake.transition_call_log == []
+
+    async def test_commented_but_not_closed_retries_close(
+        self, client, session_factory, test_user, jira_fake
+    ):
+        """A report that already has jira_comment_id (prior attempt posted the
+        comment) but closed_at=None is transitioned without re-posting the
+        comment. Proves the two idempotency keys are independent."""
+        date = "2026-06-22"
+        await _seed_task(
+            session_factory, test_user.id, "PROJ-1", status_category="indeterminate"
+        )
+        await _seed_report(
+            session_factory,
+            test_user.id,
+            "PROJ-1",
+            date,
+            content="did work",
+            jira_comment_id="prior-cmt-id",
+            pending_close=True,
+            closed_at=None,
+        )
+
+        resp = await client.post("/api/status/finalize", json={"date": date})
+
+        assert resp.status_code == 200, resp.text
+        # Comment NOT re-posted (jira_comment_id skip).
+        assert jira_fake.call_log == []
+        # Transition called once.
+        assert jira_fake.transition_call_log == ["PROJ-1"]
+
+        async with session_factory() as s:
+            r = (
+                await s.execute(
+                    select(StatusReport).where(StatusReport.task_key == "PROJ-1")
+                )
+            ).scalar_one()
+            assert r.closed_at is not None
+            assert r.jira_comment_id == "prior-cmt-id"
+
+            t = (
+                await s.execute(select(Task).where(Task.jira_key == "PROJ-1"))
+            ).scalar_one()
+            assert t.status_category == "done"
+
+
+    async def test_no_done_transition_treated_as_closed(
+        self, client, session_factory, test_user, jira_fake
+    ):
+        """If JIRA reports no Done transition available (task already terminal
+        out-of-band — manual close, another user, or a prior transition whose
+        commit failed), finalize treats it as closed instead of looping on
+        every retry with a 502. The task reached the intended Done state."""
+        from app.services.jira_client import JiraNoDoneTransitionError
+
+        date = "2026-06-22"
+        await _seed_task(
+            session_factory, test_user.id, "PROJ-1", status_category="indeterminate"
+        )
+        await _seed_report(
+            session_factory,
+            test_user.id,
+            "PROJ-1",
+            date,
+            content="did work",
+            pending_close=True,
+            closed_at=None,
+        )
+        jira_fake.set_transition_default_side_effect(
+            JiraNoDoneTransitionError("no Done transition")
+        )
+
+        resp = await client.post("/api/status/finalize", json={"date": date})
+
+        assert resp.status_code == 200, resp.text
+        assert jira_fake.transition_call_log == ["PROJ-1"]
+
+        async with session_factory() as s:
+            r = (
+                await s.execute(
+                    select(StatusReport).where(StatusReport.task_key == "PROJ-1")
+                )
+            ).scalar_one()
+            assert r.closed_at is not None
+
+            t = (
+                await s.execute(select(Task).where(Task.jira_key == "PROJ-1"))
+            ).scalar_one()
+            assert t.status_category == "done"

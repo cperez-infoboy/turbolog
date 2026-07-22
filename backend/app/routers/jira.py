@@ -7,13 +7,14 @@ from sqlalchemy import select
 from app.config import settings
 from app.database import async_session
 from app.dependencies import get_current_user, get_jira_client
+from app.models.daily_closure import DailyClosure
+from app.models.status_report import StatusReport
 from app.models.task import Task
 from app.models.user import User
 from app.services.jira_client import (
     JiraAuthError,
     JiraClient,
     JiraError,
-    JiraNoDoneTransitionError,
     JiraRateLimitError,
     jira_base_url,
 )
@@ -133,14 +134,20 @@ async def get_jira_tasks(
 @router.post("/tasks/{task_key}/close")
 async def close_task(
     task_key: str,
+    body: dict,
     user: User = Depends(get_current_user),
 ):
-    """Transition a cached JIRA task to Done.
+    """Mark a task's status report as pending-close for the given date.
 
-    Verifies ownership against the task cache, calls the JIRA transitions API,
-    then mirrors the new status into the cached row so the UI reflects it.
+    Deferred-close flow: instead of transitioning JIRA immediately, this stores
+    a pending-close intention on the StatusReport. The actual transition runs
+    when the user finalizes the day (POST /api/status/finalize), alongside
+    comment posting.
     """
-    client = _get_jira_client()
+    raw_date = body.get("date") if isinstance(body, dict) else None
+    if not isinstance(raw_date, str) or not raw_date.strip():
+        raise HTTPException(400, "Fecha requerida")
+    report_date = raw_date.strip()
 
     async with async_session() as session:
         result = await session.execute(
@@ -150,22 +157,71 @@ async def close_task(
         if task is None:
             raise HTTPException(404, "Tarea no encontrada")
 
-        try:
-            status_name = await client.transition_to_done(task_key)
-        except JiraNoDoneTransitionError:
-            raise HTTPException(409, "La tarea no se puede cerrar desde su estado actual")
-        except JiraAuthError:
-            raise HTTPException(500, "JIRA server credentials are invalid")
-        except JiraRateLimitError:
-            raise HTTPException(503, "JIRA rate limit exceeded, try again later")
-        except JiraError as e:
-            raise HTTPException(502, str(e))
+        closure_result = await session.execute(
+            select(DailyClosure).where(
+                DailyClosure.user_id == user.id,
+                DailyClosure.report_date == report_date,
+            )
+        )
+        if closure_result.scalar_one_or_none() is not None:
+            raise HTTPException(409, "El día ya está cerrado")
 
-        task.status = status_name
-        task.status_category = "done"
+        report_result = await session.execute(
+            select(StatusReport).where(
+                StatusReport.user_id == user.id,
+                StatusReport.task_key == task_key,
+                StatusReport.report_date == report_date,
+            )
+        )
+        report = report_result.scalar_one_or_none()
+        if report is None or not report.content.strip():
+            raise HTTPException(422, "Debes ingresar un status antes de cerrar la tarea.")
+
+        report.pending_close = True
         await session.commit()
 
-    return {"jira_key": task_key, "status": status_name}
+    return {"task_key": task_key, "pending_close": True}
+
+
+@router.delete("/tasks/{task_key}/close")
+async def cancel_close_task(
+    task_key: str,
+    date: str,
+    user: User = Depends(get_current_user),
+):
+    """Clear the pending-close intention for a task on the given date."""
+    if not date.strip():
+        raise HTTPException(400, "Fecha requerida")
+    async with async_session() as session:
+        result = await session.execute(
+            select(Task).where(Task.user_id == user.id, Task.jira_key == task_key)
+        )
+        task = result.scalar_one_or_none()
+        if task is None:
+            raise HTTPException(404, "Tarea no encontrada")
+
+        closure_result = await session.execute(
+            select(DailyClosure).where(
+                DailyClosure.user_id == user.id,
+                DailyClosure.report_date == date,
+            )
+        )
+        if closure_result.scalar_one_or_none() is not None:
+            raise HTTPException(409, "El día ya está cerrado")
+
+        report_result = await session.execute(
+            select(StatusReport).where(
+                StatusReport.user_id == user.id,
+                StatusReport.task_key == task_key,
+                StatusReport.report_date == date,
+            )
+        )
+        report = report_result.scalar_one_or_none()
+        if report is not None:
+            report.pending_close = False
+            await session.commit()
+
+    return {"task_key": task_key, "pending_close": False}
 
 
 def _task_to_dict(task: Task) -> dict:

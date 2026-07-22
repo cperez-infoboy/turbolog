@@ -1,5 +1,6 @@
+import logging
 import secrets
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse
@@ -7,6 +8,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.database import async_session
 from app.dependencies import get_current_user, get_jira_client
 from app.models.daily_closure import DailyClosure
@@ -14,7 +16,7 @@ from app.models.status_report import StatusReport
 from app.models.task import Task
 from app.models.user import User
 from app.services.audit_service import compute_user_month_summary
-from app.services.jira_client import strip_html
+from app.services.jira_client import JiraNoDoneTransitionError, strip_html
 from app.services.llm_client import (
     LlmAuthError,
     LlmConfigError,
@@ -24,6 +26,8 @@ from app.services.llm_client import (
 )
 
 router = APIRouter(prefix="/api/status", tags=["status"])
+
+logger = logging.getLogger(__name__)
 
 
 @router.post("")
@@ -69,6 +73,7 @@ async def create_report(
                 "content": existing.content,
                 "date": existing.report_date,
                 "updated_at": existing.updated_at,
+                "pending_close": bool(existing.pending_close),
             }
 
         report = StatusReport(
@@ -88,6 +93,7 @@ async def create_report(
             "content": report.content,
             "date": report.report_date,
             "created_at": report.created_at,
+            "pending_close": bool(report.pending_close),
         }
 
 
@@ -197,10 +203,22 @@ async def finalize_day(
         # (status_category == "indeterminate") for the user must have a
         # StatusReport with non-empty content for this date. If any is
         # missing, reject with 422 BEFORE claiming the mutex or calling JIRA.
+        #
+        # Freshness gate: only count tasks the cache still vouches for
+        # (fetched_at within JIRA_CACHE_TTL). This mirrors the /api/jira
+        # cache-hit path, which never returns rows older than the TTL. A task
+        # JIRA has since dropped (moved to Done / unassigned) is never
+        # re-fetched, so its cache row stays "indeterminate" with a stale
+        # fetched_at and is invisible to the client — without this filter it
+        # would block finalize forever on a task the user can no longer see.
+        ttl_threshold = (
+            datetime.now(timezone.utc) - timedelta(seconds=settings.JIRA_CACHE_TTL)
+        ).isoformat()
         in_progress_result = await session.execute(
             select(Task.jira_key, Task.summary).where(
                 Task.user_id == user.id,
                 Task.status_category == "indeterminate",
+                Task.fetched_at >= ttl_threshold,
             )
         )
         in_progress_tasks = in_progress_result.all()
@@ -277,12 +295,76 @@ async def finalize_day(
                 # Broad catch: JIRA errors, httpx network/timeout errors,
                 # malformed JSON / KeyError on response — anything. Summarize
                 # so we never leak raw internals to the user.
-                failed.append({"task_key": report.task_key, "error": _summarize_error(e)})
+                logger.exception("finalize comment failed for %s", report.task_key)
+                failed.append(
+                    {
+                        "task_key": report.task_key,
+                        "action": "comment",
+                        "error": _summarize_error(e),
+                    }
+                )
                 continue
 
             report.jira_comment_id = comment_id
             await session.commit()
             posted += 1
+
+        # Deferred-close loop: transition tasks flagged as pending_close to
+        # Done in JIRA. Runs AFTER comment posting, BEFORE the failed check.
+        # Idempotent: reports with closed_at set (prior partial attempt) are
+        # skipped, just as reports with jira_comment_id are skipped above.
+        for report in reports:
+            if not report.pending_close:
+                continue
+            if report.closed_at is not None:
+                continue
+            # A pending_close report always has non-empty content (enforced by
+            # close_task). If jira_comment_id is still None the comment failed
+            # this attempt — defer the close to the retry so we never leave a
+            # task Done in JIRA without its status comment.
+            if report.jira_comment_id is None:
+                continue
+            try:
+                status_name = await jira_client.transition_to_done(report.task_key)
+            except JiraNoDoneTransitionError:
+                # The task is already in a terminal state in JIRA (manual
+                # close, another user, automation, or a prior transition
+                # whose commit failed). That IS the outcome pending_close
+                # intended — treat as closed so retry never loops forever
+                # on a task that can no longer transition.
+                logger.warning(
+                    "finalize close: %s already terminal in JIRA, marking closed",
+                    report.task_key,
+                )
+                status_name = None
+            except Exception as e:
+                logger.exception("finalize close failed for %s", report.task_key)
+                failed.append(
+                    {
+                        "task_key": report.task_key,
+                        "action": "close",
+                        "error": _summarize_error(e),
+                    }
+                )
+                continue
+
+            report.closed_at = datetime.now(timezone.utc).isoformat()
+
+            task_result = await session.execute(
+                select(Task).where(
+                    Task.user_id == user.id, Task.jira_key == report.task_key
+                )
+            )
+            task_row = task_result.scalar_one_or_none()
+            if task_row is not None:
+                if status_name is not None:
+                    task_row.status = status_name
+                task_row.status_category = "done"
+
+            # Known weakness: a commit failure here leaves JIRA transitioned
+            # but closed_at unset — same as the comment-posting loop above.
+            # Accepted for consistency; DB commit failure is infra-level.
+            await session.commit()
 
         if failed:
             # Unlock the day so the user can retry. Already-posted reports
@@ -380,6 +462,8 @@ async def _get_reports_by_date(user_id: str, date: str) -> dict:
                 "date": r.report_date,
                 "updated_at": r.updated_at,
                 "jira_comment_id": r.jira_comment_id,
+                "pending_close": bool(r.pending_close),
+                "closed_at": r.closed_at,
             }
             for r in reports
         ],

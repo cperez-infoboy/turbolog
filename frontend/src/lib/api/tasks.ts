@@ -26,10 +26,17 @@ export async function fetchTasks(refresh: boolean = false): Promise<Task[]> {
 }
 
 export async function closeTask(
-	taskKey: string
-): Promise<{ jira_key: string; status: string }> {
-	return await api<{ jira_key: string; status: string }>(
+	taskKey: string,
+	date: string
+): Promise<{ task_key: string; pending_close: boolean }> {
+	return await api<{ task_key: string; pending_close: boolean }>(
 		`/api/jira/tasks/${taskKey}/close`,
-		{ method: 'POST' }
+		{ method: 'POST', body: JSON.stringify({ date }) }
 	);
+}
+
+export async function cancelClose(taskKey: string, date: string): Promise<void> {
+	await api(`/api/jira/tasks/${taskKey}/close?date=${encodeURIComponent(date)}`, {
+		method: 'DELETE'
+	});
 }

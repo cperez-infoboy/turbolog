@@ -10,14 +10,10 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from fastapi import HTTPException
 
+from app.models.daily_closure import DailyClosure
+from app.models.status_report import StatusReport
 from app.models.task import Task
 from app.routers import jira as jira_router
-from app.services.jira_client import (
-    JiraAuthError,
-    JiraError,
-    JiraNoDoneTransitionError,
-    JiraRateLimitError,
-)
 
 
 def _task_data(
@@ -262,76 +258,196 @@ def _seed_task(
 
 
 class TestCloseTask:
-    """POST /api/jira/tasks/{task_key}/close — transition a task to Done.
+    """POST /api/jira/tasks/{task_key}/close — deferred-close intention.
 
-    Contract:
-    - 200 on success: cached row updated (status + status_category='done'),
-      returns {"jira_key", "status"}.
-    - 404 when the task is not owned by the caller (no row for user_id).
-    - 409 JiraNoDoneTransitionError, 500 JiraAuthError, 503 rate limit, 502 generic.
+    Contract (deferred close):
+    - 200 on success: sets StatusReport.pending_close=True for the date,
+      returns {"task_key", "pending_close": True}. No JIRA mutation.
+    - 400 when date is missing or empty.
+    - 404 when the task is not owned by the caller.
+    - 409 when the day is already closed (DailyClosure exists).
+    - 422 when no report exists or content is empty.
     """
 
-    async def test_close_updates_cached_row_and_returns_status(self, patched_jira, db_session):
+    async def test_close_sets_pending_close_and_skips_jira(
+        self, patched_jira, db_session
+    ):
         task = _seed_task(db_session)
+        report = StatusReport(
+            id="r1",
+            user_id="user-1",
+            task_key="PROJ-1",
+            report_date="2026-06-22",
+            content="did some work",
+        )
+        db_session.add(task)
+        db_session.add(report)
         await db_session.commit()
-        patched_jira.transition_to_done = AsyncMock(return_value="Done")
 
-        result = await jira_router.close_task("PROJ-1", user=_make_fake_user())
+        result = await jira_router.close_task(
+            "PROJ-1", body={"date": "2026-06-22"}, user=_make_fake_user()
+        )
 
-        assert result == {"jira_key": "PROJ-1", "status": "Done"}
-        patched_jira.transition_to_done.assert_awaited_once_with("PROJ-1")
-        await db_session.refresh(task)
-        assert task.status == "Done"
-        assert task.status_category == "done"
+        assert result == {"task_key": "PROJ-1", "pending_close": True}
+        patched_jira.transition_to_done.assert_not_called()
+        await db_session.refresh(report)
+        assert report.pending_close is True
 
-    async def test_close_returns_404_when_task_not_owned_by_user(self, patched_jira, db_session):
+    async def test_close_returns_422_when_no_report(self, patched_jira, db_session):
+        task = _seed_task(db_session)
+        db_session.add(task)
+        await db_session.commit()
+
+        with pytest.raises(HTTPException) as exc:
+            await jira_router.close_task(
+                "PROJ-1", body={"date": "2026-06-22"}, user=_make_fake_user()
+            )
+        assert exc.value.status_code == 422
+
+    async def test_close_returns_422_when_empty_content(self, patched_jira, db_session):
+        task = _seed_task(db_session)
+        report = StatusReport(
+            id="r2",
+            user_id="user-1",
+            task_key="PROJ-1",
+            report_date="2026-06-22",
+            content="   ",
+        )
+        db_session.add(task)
+        db_session.add(report)
+        await db_session.commit()
+
+        with pytest.raises(HTTPException) as exc:
+            await jira_router.close_task(
+                "PROJ-1", body={"date": "2026-06-22"}, user=_make_fake_user()
+            )
+        assert exc.value.status_code == 422
+
+    async def test_close_returns_409_when_day_already_closed(
+        self, patched_jira, db_session
+    ):
+        task = _seed_task(db_session)
+        report = StatusReport(
+            id="r3",
+            user_id="user-1",
+            task_key="PROJ-1",
+            report_date="2026-06-22",
+            content="did work",
+        )
+        closure = DailyClosure(
+            id="c1",
+            user_id="user-1",
+            report_date="2026-06-22",
+            finalized_at="2026-06-22T00:00:00+00:00",
+        )
+        db_session.add_all([task, report, closure])
+        await db_session.commit()
+
+        with pytest.raises(HTTPException) as exc:
+            await jira_router.close_task(
+                "PROJ-1", body={"date": "2026-06-22"}, user=_make_fake_user()
+            )
+        assert exc.value.status_code == 409
+
+    async def test_close_returns_404_when_task_not_owned(self, patched_jira, db_session):
         _seed_task(db_session, user_id="user-other")
         await db_session.commit()
 
         with pytest.raises(HTTPException) as exc:
-            await jira_router.close_task("PROJ-1", user=_make_fake_user())
-
+            await jira_router.close_task(
+                "PROJ-1", body={"date": "2026-06-22"}, user=_make_fake_user()
+            )
         assert exc.value.status_code == 404
-        patched_jira.transition_to_done.assert_not_called()
 
-    async def test_close_returns_409_when_no_done_transition(self, patched_jira, db_session):
-        _seed_task(db_session)
+    async def test_close_returns_400_when_date_missing(self, patched_jira, db_session):
+        task = _seed_task(db_session)
+        db_session.add(task)
         await db_session.commit()
-        patched_jira.transition_to_done = AsyncMock(
-            side_effect=JiraNoDoneTransitionError("no path")
+
+        with pytest.raises(HTTPException) as exc:
+            await jira_router.close_task("PROJ-1", body={}, user=_make_fake_user())
+        assert exc.value.status_code == 400
+
+    async def test_close_returns_400_when_date_not_string(
+        self, patched_jira, db_session
+    ):
+        task = _seed_task(db_session)
+        db_session.add(task)
+        await db_session.commit()
+
+        with pytest.raises(HTTPException) as exc:
+            await jira_router.close_task(
+                "PROJ-1", body={"date": 123}, user=_make_fake_user()
+            )
+        assert exc.value.status_code == 400
+
+        with pytest.raises(HTTPException) as exc:
+            await jira_router.close_task(
+                "PROJ-1", body={"date": None}, user=_make_fake_user()
+            )
+        assert exc.value.status_code == 400
+
+
+class TestCancelCloseTask:
+    """DELETE /api/jira/tasks/{task_key}/close — clear pending-close intention."""
+
+    async def test_cancel_clears_pending_close(self, patched_jira, db_session):
+        task = _seed_task(db_session)
+        report = StatusReport(
+            id="r4",
+            user_id="user-1",
+            task_key="PROJ-1",
+            report_date="2026-06-22",
+            content="did work",
+            pending_close=True,
+        )
+        db_session.add(task)
+        db_session.add(report)
+        await db_session.commit()
+
+        result = await jira_router.cancel_close_task(
+            "PROJ-1", date="2026-06-22", user=_make_fake_user()
         )
 
-        with pytest.raises(HTTPException) as exc:
-            await jira_router.close_task("PROJ-1", user=_make_fake_user())
+        assert result == {"task_key": "PROJ-1", "pending_close": False}
+        await db_session.refresh(report)
+        assert report.pending_close is False
 
+    async def test_cancel_without_report_returns_false(self, patched_jira, db_session):
+        task = _seed_task(db_session)
+        db_session.add(task)
+        await db_session.commit()
+
+        result = await jira_router.cancel_close_task(
+            "PROJ-1", date="2026-06-22", user=_make_fake_user()
+        )
+        assert result == {"task_key": "PROJ-1", "pending_close": False}
+
+    async def test_cancel_returns_409_when_day_closed(self, patched_jira, db_session):
+        task = _seed_task(db_session)
+        closure = DailyClosure(
+            id="c2",
+            user_id="user-1",
+            report_date="2026-06-22",
+            finalized_at="2026-06-22T00:00:00+00:00",
+        )
+        db_session.add_all([task, closure])
+        await db_session.commit()
+
+        with pytest.raises(HTTPException) as exc:
+            await jira_router.cancel_close_task(
+                "PROJ-1", date="2026-06-22", user=_make_fake_user()
+            )
         assert exc.value.status_code == 409
 
-    async def test_close_returns_500_on_jira_auth_error(self, patched_jira, db_session):
-        _seed_task(db_session)
+    async def test_cancel_returns_404_when_task_not_owned(
+        self, patched_jira, db_session
+    ):
+        _seed_task(db_session, user_id="user-other")
         await db_session.commit()
-        patched_jira.transition_to_done = AsyncMock(side_effect=JiraAuthError("bad creds"))
 
         with pytest.raises(HTTPException) as exc:
-            await jira_router.close_task("PROJ-1", user=_make_fake_user())
-
-        assert exc.value.status_code == 500
-
-    async def test_close_returns_503_on_rate_limit(self, patched_jira, db_session):
-        _seed_task(db_session)
-        await db_session.commit()
-        patched_jira.transition_to_done = AsyncMock(side_effect=JiraRateLimitError("slow"))
-
-        with pytest.raises(HTTPException) as exc:
-            await jira_router.close_task("PROJ-1", user=_make_fake_user())
-
-        assert exc.value.status_code == 503
-
-    async def test_close_returns_502_on_generic_jira_error(self, patched_jira, db_session):
-        _seed_task(db_session)
-        await db_session.commit()
-        patched_jira.transition_to_done = AsyncMock(side_effect=JiraError("boom"))
-
-        with pytest.raises(HTTPException) as exc:
-            await jira_router.close_task("PROJ-1", user=_make_fake_user())
-
-        assert exc.value.status_code == 502
+            await jira_router.cancel_close_task(
+                "PROJ-1", date="2026-06-22", user=_make_fake_user()
+            )
+        assert exc.value.status_code == 404
