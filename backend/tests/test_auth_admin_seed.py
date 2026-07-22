@@ -29,6 +29,7 @@ from sqlalchemy import select
 
 from app.config import settings
 from app.dependencies import get_current_user
+from app.models.audit_period import AuditPeriod
 from app.models.user import User
 from app.routers import auth as auth_router
 
@@ -160,6 +161,37 @@ class TestRegisterNeverGrantsAdmin:
         assert resp.status_code == 200, resp.text
         user = await _fetch_user(session_factory, "anyone@x.com")
         assert user.is_admin is False
+
+
+# --------------------------------------------------------------------------- #
+# register -> opens an audit period (is_audited defaults True at signup, so the
+# monthly audit report can count expected days from registration onward).
+# --------------------------------------------------------------------------- #
+
+
+class TestRegisterOpensAuditPeriod:
+    async def test_register_creates_open_audit_period(
+        self, auth_client, session_factory, monkeypatch
+    ):
+        """Registering a new user must open exactly one audit period so the
+        monthly audit report has an expected-days window from day one."""
+        monkeypatch.setattr(settings, "ADMIN_EMAILS", "boss@company.com")
+        await _allow_email(session_factory, "dev@company.com")
+        resp = await auth_client.post(
+            "/api/auth/register", json=_register_payload("dev@company.com")
+        )
+        assert resp.status_code == 200, resp.text
+
+        user = await _fetch_user(session_factory, "dev@company.com")
+        async with session_factory() as s:
+            result = await s.execute(
+                select(AuditPeriod).where(AuditPeriod.user_id == user.id)
+            )
+            periods = result.scalars().all()
+
+        assert len(periods) == 1, "register must open exactly one audit period"
+        assert periods[0].started_at is not None
+        assert periods[0].ended_at is None, "newly-opened period must be open"
 
 
 # --------------------------------------------------------------------------- #

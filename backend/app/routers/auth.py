@@ -12,6 +12,7 @@ from sqlalchemy import select
 from app.config import settings
 from app.database import async_session
 from app.dependencies import _admin_seed, can_login, get_current_user, is_super_admin
+from app.models.audit_period import AuditPeriod
 from app.models.user import User
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
@@ -237,6 +238,12 @@ async def register(body: dict):
             # where the email is Google-verified.
         )
         session.add(user)
+        # is_audited defaults True at signup -- open the matching audit period
+        # so the monthly report can count expected days from registration on.
+        session.add(AuditPeriod(
+            user_id=user_id,
+            started_at=datetime.now(timezone.utc).isoformat(),
+        ))
         await session.commit()
 
     token = _make_jwt(user.id, user.email, user.name)
