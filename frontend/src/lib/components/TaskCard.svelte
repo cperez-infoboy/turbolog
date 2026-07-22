@@ -676,6 +676,7 @@
 	}
 
 	.accordion-body.expanded .accordion-inner {
+		padding-top: 0.75rem;
 		padding-bottom: 1.25rem;
 	}
 
