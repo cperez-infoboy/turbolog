@@ -11,6 +11,11 @@ from unittest.mock import MagicMock, patch
 from app.services.jira_client import JiraClient, _adf_to_html
 
 
+def _normalize(issues: list[dict]) -> list[dict]:
+    """Call _normalize_tasks via a real instance (it now reads self._base_url)."""
+    return JiraClient("example.atlassian.net", "dev@example.com", "tok")._normalize_tasks(issues)
+
+
 def _sample_issue(
     key: str = "PROJ-1",
     created: str = "2024-01-15T10:00:00.000+0000",
@@ -50,7 +55,7 @@ class TestNormalizeTasksEmitsCreated:
     def test_normalize_includes_created_iso_string(self):
         issue = _sample_issue(created="2024-01-15T10:00:00.000+0000")
 
-        result = JiraClient._normalize_tasks([issue])
+        result = _normalize([issue])
 
         assert len(result) == 1
         assert result[0]["created"] == "2024-01-15T10:00:00.000+0000"
@@ -62,7 +67,7 @@ class TestNormalizeTasksEmitsCreated:
             _sample_issue(key="PROJ-2", created="2023-05-20T08:30:00.000+0000"),
         ]
 
-        result = JiraClient._normalize_tasks(issues)
+        result = _normalize(issues)
 
         assert result[0]["created"] == "2024-01-15T10:00:00.000+0000"
         assert result[1]["created"] == "2023-05-20T08:30:00.000+0000"
@@ -78,7 +83,7 @@ class TestNormalizeTasksEmitsDuedateAndDescription:
     def test_normalize_duedate_passes_through_from_fields(self):
         issue = _sample_issue(duedate="2024-07-01")
 
-        result = JiraClient._normalize_tasks([issue])
+        result = _normalize([issue])
 
         assert result[0]["duedate"] == "2024-07-01"
 
@@ -93,7 +98,7 @@ class TestNormalizeTasksEmitsDuedateAndDescription:
             },
         )
 
-        result = JiraClient._normalize_tasks([issue])
+        result = _normalize([issue])
 
         # ADF paragraph+text is parsed to <p>...</p>; NOT the raw ADF dict.
         assert result[0]["description"] == "<p>HTML body</p>"
@@ -125,7 +130,7 @@ class TestNormalizeTasksEmitsDuedateAndDescription:
             ),
         ]
 
-        result = JiraClient._normalize_tasks(issues)
+        result = _normalize(issues)
 
         assert result[0]["duedate"] == "2024-07-01"
         assert result[0]["description"] == "<p>First</p>"
@@ -146,7 +151,7 @@ class TestNormalizeTasksEmitsDuedateAndDescription:
             },
         }
 
-        result = JiraClient._normalize_tasks([issue])
+        result = _normalize([issue])
 
         assert result[0]["duedate"] is None
         # No ADF -> parser returns "" (empty HTML string), not None.

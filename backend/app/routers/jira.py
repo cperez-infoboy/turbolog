@@ -9,7 +9,14 @@ from app.database import async_session
 from app.dependencies import get_current_user, get_jira_client
 from app.models.task import Task
 from app.models.user import User
-from app.services.jira_client import JiraAuthError, JiraClient, JiraError, JiraRateLimitError
+from app.services.jira_client import (
+    JiraAuthError,
+    JiraClient,
+    JiraError,
+    JiraNoDoneTransitionError,
+    JiraRateLimitError,
+    jira_base_url,
+)
 
 router = APIRouter(prefix="/api/jira", tags=["jira"])
 
@@ -123,9 +130,53 @@ async def get_jira_tasks(
     return jira_tasks
 
 
+@router.post("/tasks/{task_key}/close")
+async def close_task(
+    task_key: str,
+    user: User = Depends(get_current_user),
+):
+    """Transition a cached JIRA task to Done.
+
+    Verifies ownership against the task cache, calls the JIRA transitions API,
+    then mirrors the new status into the cached row so the UI reflects it.
+    """
+    client = _get_jira_client()
+
+    async with async_session() as session:
+        result = await session.execute(
+            select(Task).where(Task.user_id == user.id, Task.jira_key == task_key)
+        )
+        task = result.scalar_one_or_none()
+        if task is None:
+            raise HTTPException(404, "Tarea no encontrada")
+
+        try:
+            status_name = await client.transition_to_done(task_key)
+        except JiraNoDoneTransitionError:
+            raise HTTPException(409, "La tarea no se puede cerrar desde su estado actual")
+        except JiraAuthError:
+            raise HTTPException(500, "JIRA server credentials are invalid")
+        except JiraRateLimitError:
+            raise HTTPException(503, "JIRA rate limit exceeded, try again later")
+        except JiraError as e:
+            raise HTTPException(502, str(e))
+
+        task.status = status_name
+        task.status_category = "done"
+        await session.commit()
+
+    return {"jira_key": task_key, "status": status_name}
+
+
 def _task_to_dict(task: Task) -> dict:
+    browse_url = (
+        f"{jira_base_url(settings.JIRA_DOMAIN)}/browse/{task.jira_key}"
+        if settings.JIRA_DOMAIN
+        else None
+    )
     return {
         "jira_key": task.jira_key,
+        "browse_url": browse_url,
         "summary": task.summary,
         "status": task.status,
         "status_category": task.status_category,

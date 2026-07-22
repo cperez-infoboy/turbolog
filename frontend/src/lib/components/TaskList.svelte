@@ -18,6 +18,7 @@
 		loading?: boolean;
 		onSelectTask: (task: Task) => void;
 		onReportSaved?: () => void;
+		onTaskClosed?: () => void;
 	}
 
 	let {
@@ -28,7 +29,8 @@
 		finalized = false,
 		loading = false,
 		onSelectTask,
-		onReportSaved
+		onReportSaved,
+		onTaskClosed
 	}: Props = $props();
 
 	// Keep the store reference (do NOT destructure) — reading `tasksStore.sortDirection`
@@ -287,6 +289,7 @@
 									{finalized}
 									onclick={handleSelectTask}
 									{onReportSaved}
+								{onTaskClosed}
 								/>
 							{/each}
 						</div>

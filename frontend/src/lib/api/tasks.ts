@@ -2,6 +2,7 @@ import { api } from './client';
 
 export interface Task {
 	jira_key: string;
+	browse_url?: string | null;
 	summary: string;
 	status: string;
 	status_category: string | null;
@@ -22,4 +23,13 @@ export async function fetchTasks(refresh: boolean = false): Promise<Task[]> {
 		return result;
 	}
 	return result.tasks;
+}
+
+export async function closeTask(
+	taskKey: string
+): Promise<{ jira_key: string; status: string }> {
+	return await api<{ jira_key: string; status: string }>(
+		`/api/jira/tasks/${taskKey}/close`,
+		{ method: 'POST' }
+	);
 }

@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { untrack } from 'svelte';
 	import { ApiError } from '$lib/api/client';
+	import { closeTask } from '$lib/api/tasks';
 	import type { Task } from '$lib/api/tasks';
 	import type { StatusReportWithSummary } from '$lib/api/status';
 	import { createReport, improveStatus, updateReport } from '$lib/api/status';
@@ -14,6 +15,7 @@
 		finalized?: boolean;
 		onclick?: (task: Task) => void;
 		onReportSaved?: () => void;
+		onTaskClosed?: () => void;
 	}
 
 	let {
@@ -23,7 +25,8 @@
 		date = '',
 		finalized = false,
 		onclick,
-		onReportSaved
+		onReportSaved,
+		onTaskClosed
 	}: Props = $props();
 
 	let content = $state('');
@@ -34,6 +37,8 @@
 	let revealing = $state(false); // typewriter reveal in progress
 	let improveError = $state<string | null>(null);
 	let revealTimer: ReturnType<typeof setInterval> | undefined; // non-reactive handle
+	let closing = $state(false);
+	let closeError = $state<string | null>(null);
 	let textareaEl: HTMLTextAreaElement | undefined = $state();
 	let cardEl: HTMLDivElement | undefined = $state();
 
@@ -153,6 +158,24 @@
 		onclick?.(task);
 	}
 
+	async function handleCloseTask() {
+		if (closing) return;
+		closeError = null;
+		if (!confirm(`¿Cerrar la tarea ${task.jira_key} en JIRA? Se marcará como Done.`)) return;
+		closing = true;
+		try {
+			await closeTask(task.jira_key);
+			onTaskClosed?.();
+		} catch (err) {
+			closeError =
+				err instanceof ApiError && err.status === 409
+					? 'La tarea no se puede cerrar desde su estado actual.'
+					: 'No se pudo cerrar la tarea. Intenta nuevamente.';
+		} finally {
+			closing = false;
+		}
+	}
+
 	// Format an ISO / YYYY-MM-DD date for display in the es locale. '' on falsy/invalid.
 	// JIRA `duedate` is date-only (YYYY-MM-DD); Date parses those as UTC, which drifts
 	// one day backward in negative-offset timezones (e.g. UTC-3 shows the 14th for the 15th).
@@ -254,6 +277,27 @@
 
 	<div class="accordion-body" class:expanded={selected}>
 		<div class="accordion-inner">
+			<div class="card-actions">
+				{#if task.browse_url}
+					<a class="jira-link" href={task.browse_url} target="_blank" rel="noopener">
+						Abrir en JIRA ↗
+					</a>
+				{/if}
+				{#if task.status_category === 'indeterminate'}
+					<Button
+						variant="danger"
+						size="sm"
+						onclick={handleCloseTask}
+						disabled={closing}
+						loading={closing}
+					>
+						Cerrar tarea
+					</Button>
+					{#if closeError}
+						<span class="improve-error">{closeError}</span>
+					{/if}
+				{/if}
+			</div>
 			{#if task.description}
 				<div class="description-wrap">
 					<div
@@ -682,6 +726,27 @@
 
 	textarea::placeholder {
 		color: rgba(255, 255, 255, 0.25);
+	}
+
+	.card-actions {
+		display: flex;
+		align-items: center;
+		gap: 0.75rem;
+		flex-wrap: wrap;
+	}
+
+	.jira-link {
+		font-family: var(--font-body);
+		font-size: 0.8rem;
+		font-weight: 600;
+		color: var(--neon-cyan);
+		text-decoration: none;
+		transition: text-shadow var(--transition-speed) ease;
+	}
+
+	.jira-link:hover {
+		text-decoration: underline;
+		text-shadow: 0 0 8px rgba(0, 255, 255, 0.3);
 	}
 
 	.editor-footer {

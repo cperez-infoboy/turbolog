@@ -201,6 +201,16 @@ def extract_comments(comment_field) -> str:
     return "\n".join(lines)
 
 
+def jira_base_url(domain: str) -> str:
+    """Normalize a JIRA Cloud domain into ``https://{core}.atlassian.net``.
+
+    Accepts a bare core, ``core.atlassian.net``, or a full ``https://...`` URL.
+    """
+    clean = re.sub(r'^https?://', '', domain).rstrip('/')
+    core = clean.replace(".atlassian.net", "")
+    return f"https://{core}.atlassian.net"
+
+
 class JiraClient:
     """Client for JIRA Cloud REST API v3 using Basic Auth (email + API token)."""
 
@@ -208,9 +218,7 @@ class JiraClient:
         self.jira_domain = jira_domain
         self.email = email
         self.api_token = api_token
-        clean = re.sub(r'^https?://', '', jira_domain).rstrip('/')
-        domain = clean.replace(".atlassian.net", "")
-        self._base_url = f"https://{domain}.atlassian.net"
+        self._base_url = jira_base_url(jira_domain)
         self._auth_header = self._make_auth_header()
 
     def _make_auth_header(self) -> str:
@@ -329,8 +337,69 @@ class JiraClient:
 
         return response.json()["id"]
 
-    @staticmethod
-    def _normalize_tasks(issues: list[dict]) -> list[dict]:
+    async def transition_to_done(self, issue_key: str) -> str:
+        """Transition an issue to Done and return the destination status name.
+
+        Two-step flow mirroring ``add_comment``:
+          GET  /rest/api/3/issue/{key}/transitions  -> list available transitions
+          POST /rest/api/3/issue/{key}/transitions  -> {"transition": {"id": <id>}}
+
+        Selects the transition whose ``to.statusCategory.key == "done"``; when
+        several match, prefers a canonical name in {Done, Closed, Resolved}.
+        Raises ``JiraNoDoneTransitionError`` if none leads to Done.
+        """
+        endpoint = f"{self._base_url}/rest/api/3/issue/{quote(issue_key, safe='')}/transitions"
+        async with httpx.AsyncClient(timeout=settings.JIRA_REQUEST_TIMEOUT) as client:
+            get_response = await client.get(endpoint, headers=self._headers())
+
+            if get_response.status_code in (401, 403):
+                raise JiraAuthError("Invalid JIRA credentials")
+            if get_response.status_code == 429:
+                raise JiraRateLimitError("JIRA rate limit exceeded")
+            if get_response.status_code not in (200,):
+                raise JiraError(
+                    f"JIRA list transitions failed for {issue_key}: "
+                    f"HTTP {get_response.status_code}"
+                )
+
+            transitions = get_response.json().get("transitions", [])
+            done_candidates = [
+                t
+                for t in transitions
+                if (t.get("to") or {}).get("statusCategory", {}).get("key") == "done"
+            ]
+            if not done_candidates:
+                raise JiraNoDoneTransitionError(
+                    f"No Done transition available for {issue_key}"
+                )
+
+            preferred = {"Done", "Closed", "Resolved"}
+            chosen = next(
+                (t for t in done_candidates if t.get("name") in preferred),
+                done_candidates[0],
+            )
+            chosen_id = chosen.get("id")
+            if chosen_id is None:
+                raise JiraError(f"JIRA transition for {issue_key} has no id")
+
+            post_response = await client.post(
+                endpoint,
+                json={"transition": {"id": chosen_id}},
+                headers={**self._headers(), "Content-Type": "application/json"},
+            )
+
+        if post_response.status_code in (401, 403):
+            raise JiraAuthError("Invalid JIRA credentials")
+        if post_response.status_code == 429:
+            raise JiraRateLimitError("JIRA rate limit exceeded")
+        if post_response.status_code not in (200, 204):
+            raise JiraError(
+                f"JIRA transition failed for {issue_key}: HTTP {post_response.status_code}"
+            )
+
+        return (chosen.get("to") or {}).get("name", chosen.get("name", "Done"))
+
+    def _normalize_tasks(self, issues: list[dict]) -> list[dict]:
         """Transform JIRA issues into a normalized task list."""
         tasks = []
         for issue in issues:
@@ -342,6 +411,7 @@ class JiraClient:
             status_category = status_field.get("statusCategory", {}).get("key")
             tasks.append({
                 "jira_key": issue.get("key", ""),
+                "browse_url": f"{self._base_url}/browse/{issue.get('key', '')}",
                 "summary": fields.get("summary", ""),
                 "status": status_field.get("name", ""),
                 "status_category": status_category,
@@ -369,4 +439,8 @@ class JiraAuthError(JiraError):
 
 class JiraRateLimitError(JiraError):
     """JIRA API rate limit exceeded."""
+
+
+class JiraNoDoneTransitionError(JiraError):
+    """The issue has no transition leading to Done from its current status."""
     pass

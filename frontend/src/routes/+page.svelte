@@ -243,6 +243,7 @@
 			loading={tasks.loading}
 			onSelectTask={handleSelectTask}
 			onReportSaved={handleReportSaved}
+			onTaskClosed={() => fetchTasks(true)}
 		/>
 	</div>
 

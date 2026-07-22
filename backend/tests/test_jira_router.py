@@ -8,9 +8,16 @@ from datetime import datetime, timezone
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from fastapi import HTTPException
 
 from app.models.task import Task
 from app.routers import jira as jira_router
+from app.services.jira_client import (
+    JiraAuthError,
+    JiraError,
+    JiraNoDoneTransitionError,
+    JiraRateLimitError,
+)
 
 
 def _task_data(
@@ -228,3 +235,103 @@ class TestTaskToDictSerializesDuedateAndDescription:
 
         assert out["duedate"] is None
         assert out["description"] is None
+
+
+def _seed_task(
+    db_session,
+    *,
+    key: str = "PROJ-1",
+    user_id: str = "user-1",
+    status: str = "In Progress",
+    category: str = "indeterminate",
+) -> Task:
+    """Insert and commit a cached Task row for the close-endpoint tests."""
+    task = Task(
+        id=f"seed-{key}",
+        user_id=user_id,
+        jira_key=key,
+        summary=f"Task {key}",
+        status=status,
+        status_category=category,
+        project_key="PROJ",
+        project_name="Project Alpha",
+        fetched_at=datetime.now(timezone.utc).isoformat(),
+    )
+    db_session.add(task)
+    return task
+
+
+class TestCloseTask:
+    """POST /api/jira/tasks/{task_key}/close — transition a task to Done.
+
+    Contract:
+    - 200 on success: cached row updated (status + status_category='done'),
+      returns {"jira_key", "status"}.
+    - 404 when the task is not owned by the caller (no row for user_id).
+    - 409 JiraNoDoneTransitionError, 500 JiraAuthError, 503 rate limit, 502 generic.
+    """
+
+    async def test_close_updates_cached_row_and_returns_status(self, patched_jira, db_session):
+        task = _seed_task(db_session)
+        await db_session.commit()
+        patched_jira.transition_to_done = AsyncMock(return_value="Done")
+
+        result = await jira_router.close_task("PROJ-1", user=_make_fake_user())
+
+        assert result == {"jira_key": "PROJ-1", "status": "Done"}
+        patched_jira.transition_to_done.assert_awaited_once_with("PROJ-1")
+        await db_session.refresh(task)
+        assert task.status == "Done"
+        assert task.status_category == "done"
+
+    async def test_close_returns_404_when_task_not_owned_by_user(self, patched_jira, db_session):
+        _seed_task(db_session, user_id="user-other")
+        await db_session.commit()
+
+        with pytest.raises(HTTPException) as exc:
+            await jira_router.close_task("PROJ-1", user=_make_fake_user())
+
+        assert exc.value.status_code == 404
+        patched_jira.transition_to_done.assert_not_called()
+
+    async def test_close_returns_409_when_no_done_transition(self, patched_jira, db_session):
+        _seed_task(db_session)
+        await db_session.commit()
+        patched_jira.transition_to_done = AsyncMock(
+            side_effect=JiraNoDoneTransitionError("no path")
+        )
+
+        with pytest.raises(HTTPException) as exc:
+            await jira_router.close_task("PROJ-1", user=_make_fake_user())
+
+        assert exc.value.status_code == 409
+
+    async def test_close_returns_500_on_jira_auth_error(self, patched_jira, db_session):
+        _seed_task(db_session)
+        await db_session.commit()
+        patched_jira.transition_to_done = AsyncMock(side_effect=JiraAuthError("bad creds"))
+
+        with pytest.raises(HTTPException) as exc:
+            await jira_router.close_task("PROJ-1", user=_make_fake_user())
+
+        assert exc.value.status_code == 500
+
+    async def test_close_returns_503_on_rate_limit(self, patched_jira, db_session):
+        _seed_task(db_session)
+        await db_session.commit()
+        patched_jira.transition_to_done = AsyncMock(side_effect=JiraRateLimitError("slow"))
+
+        with pytest.raises(HTTPException) as exc:
+            await jira_router.close_task("PROJ-1", user=_make_fake_user())
+
+        assert exc.value.status_code == 503
+
+    async def test_close_returns_502_on_generic_jira_error(self, patched_jira, db_session):
+        _seed_task(db_session)
+        await db_session.commit()
+        patched_jira.transition_to_done = AsyncMock(side_effect=JiraError("boom"))
+
+        with pytest.raises(HTTPException) as exc:
+            await jira_router.close_task("PROJ-1", user=_make_fake_user())
+
+        assert exc.value.status_code == 502
