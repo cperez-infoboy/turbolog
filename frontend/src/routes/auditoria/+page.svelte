@@ -2,8 +2,18 @@
 	import { onMount } from 'svelte';
 	import { SvelteSet } from 'svelte/reactivity';
 	import { getAuthState } from '$lib/stores/auth.svelte';
-	import { getMonthlyAudit, getAuditUsers, getUserMonthlyAudit } from '$lib/api/audit';
-	import type { UserMonthAudit, UserDetailAudit, AuditUser } from '$lib/api/audit';
+	import {
+		getMonthlyAudit,
+		getAuditUsers,
+		getUserMonthlyAudit,
+		getUserMonthStatuses
+	} from '$lib/api/audit';
+	import type {
+		UserMonthAudit,
+		UserDetailAudit,
+		AuditUser,
+		UserMonthStatuses
+	} from '$lib/api/audit';
 	import GlassPanel from '$lib/components/GlassPanel.svelte';
 	import LoadingSpinner from '$lib/components/LoadingSpinner.svelte';
 	import Button from '$lib/components/Button.svelte';
@@ -31,6 +41,14 @@
 	let userDetail = $state<UserDetailAudit | null>(null);
 	let userDetailLoading = $state(false);
 	let userDetailError = $state<string | null>(null);
+
+	// Drilldown: status reports filed by the selected user this month.
+	let statusesOpen = $state(false);
+	let userStatuses = $state<UserMonthStatuses | null>(null);
+	let userStatusesLoading = $state(false);
+	let userStatusesError = $state<string | null>(null);
+	// `${userId}|${month}` of the last successful fetch — guards refetch on toggle.
+	let statusesLoadedFor = $state<string | null>(null);
 
 	const selectedUser = $derived(
 		auditedUsers.find((u) => u.id === selectedUserId) ?? null
@@ -97,8 +115,44 @@
 		}
 	}
 
+	function resetStatuses() {
+		statusesOpen = false;
+		userStatuses = null;
+		userStatusesError = null;
+		statusesLoadedFor = null;
+	}
+
+	async function loadUserStatuses() {
+		if (!selectedUserId) return;
+		const [yearStr, monthStr] = month.split('-');
+		const year = Number(yearStr);
+		const m = Number(monthStr);
+		if (!year || !m) return;
+		userStatusesLoading = true;
+		userStatusesError = null;
+		try {
+			userStatuses = await getUserMonthStatuses(selectedUserId, year, m);
+			statusesLoadedFor = `${selectedUserId}|${month}`;
+		} catch {
+			userStatusesError = 'No se pudieron cargar los estados reportados.';
+			userStatuses = null;
+		} finally {
+			userStatusesLoading = false;
+		}
+	}
+
+	async function toggleStatuses() {
+		statusesOpen = !statusesOpen;
+		if (!statusesOpen) return;
+		// Lazy load on first open; reuse cache while user+month unchanged.
+		if (statusesLoadedFor !== `${selectedUserId}|${month}`) {
+			await loadUserStatuses();
+		}
+	}
+
 	function handleMonthChange() {
 		expanded = new SvelteSet();
+		resetStatuses();
 		if (selectedUserId) {
 			loadUserDetail();
 		} else {
@@ -108,6 +162,7 @@
 
 	function handleUserChange() {
 		expanded = new SvelteSet();
+		resetStatuses();
 		if (selectedUserId) {
 			loadUserDetail();
 		} else {
@@ -222,6 +277,49 @@
 							</div>
 						</div>
 					{/if}
+
+					<div class="statuses-section">
+						<button
+							type="button"
+							class="statuses-toggle"
+							onclick={toggleStatuses}
+							aria-expanded={statusesOpen}
+						>
+							{statusesOpen ? 'Ocultar estados reportados' : 'Ver estados reportados'}
+						</button>
+						<div class="statuses-body" class:expanded={statusesOpen}>
+							<div class="statuses-inner">
+								{#if userStatusesLoading}
+									<LoadingSpinner />
+								{:else if userStatusesError}
+									<p class="msg error">{userStatusesError}</p>
+									<Button variant="secondary" onclick={loadUserStatuses}>Reintentar</Button>
+								{:else if userStatuses && userStatuses.reports.length === 0}
+									<p class="empty">Sin estados reportados en este mes.</p>
+								{:else if userStatuses}
+									<ul class="statuses-list">
+										{#each userStatuses.reports as report (report.task_key + '|' + report.report_date)}
+											<li class="status-item">
+												<div class="status-meta">
+													<span class="status-date">{formatDate(report.report_date)}</span>
+													<span class="status-task">{report.task_key}</span>
+													{#if report.task_summary}
+														<span class="status-summary">— {report.task_summary}</span>
+													{/if}
+													<span
+														class={'jira-badge ' + (report.posted_to_jira ? 'posted' : 'not-posted')}
+													>
+														{report.posted_to_jira ? 'Publicado en JIRA' : 'No publicado'}
+													</span>
+												</div>
+												<p class="status-content">{report.content}</p>
+											</li>
+										{/each}
+									</ul>
+								{/if}
+							</div>
+						</div>
+					</div>
 				</GlassPanel>
 			{/if}
 		{:else}
@@ -472,6 +570,128 @@
 
 	:global(.audit-card.danger) {
 		border-color: rgba(255, 0, 255, 0.35);
+	}
+
+	/* Drilldown: per-user status reports. */
+	.statuses-section {
+		margin-top: 0.75rem;
+		border-top: 1px solid var(--glass-border);
+		padding-top: 0.75rem;
+	}
+
+	.statuses-toggle {
+		background: none;
+		border: 1px solid var(--glass-border);
+		border-radius: 6px;
+		padding: 0.3rem 0.7rem;
+		cursor: pointer;
+		font-family: var(--font-body);
+		font-size: 0.78rem;
+		font-weight: 600;
+		text-transform: uppercase;
+		letter-spacing: 0.05em;
+		color: var(--neon-cyan);
+		transition:
+			border-color var(--transition-speed) ease,
+			background var(--transition-speed) ease;
+	}
+
+	.statuses-toggle:hover,
+	.statuses-toggle[aria-expanded='true'] {
+		border-color: var(--neon-cyan);
+		background: rgba(0, 255, 255, 0.08);
+	}
+
+	.statuses-body {
+		display: grid;
+		grid-template-rows: 0fr;
+		transition: grid-template-rows 0.3s ease;
+	}
+
+	.statuses-body.expanded {
+		grid-template-rows: 1fr;
+	}
+
+	.statuses-inner {
+		overflow: hidden;
+		padding-top: 0;
+	}
+
+	.statuses-body.expanded .statuses-inner {
+		padding-top: 0.75rem;
+	}
+
+	.statuses-list {
+		list-style: none;
+		margin: 0;
+		padding: 0;
+		display: flex;
+		flex-direction: column;
+		gap: 0.75rem;
+	}
+
+	.status-item {
+		background: rgba(0, 0, 0, 0.3);
+		border: 1px solid var(--glass-border);
+		border-radius: 8px;
+		padding: 0.7rem 0.85rem;
+	}
+
+	.status-meta {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: 0.5rem;
+		font-family: var(--font-body);
+		font-size: 0.8rem;
+		margin-bottom: 0.4rem;
+	}
+
+	.status-date {
+		font-weight: 700;
+		color: var(--neon-cyan);
+	}
+
+	.status-task {
+		font-family: var(--font-heading);
+		font-weight: 700;
+		color: var(--text-primary);
+	}
+
+	.status-summary {
+		color: var(--text-secondary);
+		font-size: 0.78rem;
+	}
+
+	.jira-badge {
+		margin-left: auto;
+		font-size: 0.72rem;
+		font-weight: 700;
+		text-transform: uppercase;
+		letter-spacing: 0.05em;
+		padding: 0.15rem 0.5rem;
+		border-radius: 6px;
+	}
+
+	.jira-badge.posted {
+		color: var(--neon-green);
+		background: rgba(0, 255, 0, 0.08);
+		border: 1px solid rgba(0, 255, 0, 0.3);
+	}
+
+	.jira-badge.not-posted {
+		color: var(--text-secondary);
+		background: rgba(255, 255, 255, 0.05);
+		border: 1px solid var(--glass-border);
+	}
+
+	.status-content {
+		margin: 0;
+		font-family: var(--font-body);
+		font-size: 0.85rem;
+		color: var(--text-primary);
+		line-height: 1.45;
+		white-space: pre-wrap;
 	}
 
 	.empty {

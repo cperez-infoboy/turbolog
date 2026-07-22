@@ -29,6 +29,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.models.audit_period import AuditPeriod
 from app.models.daily_closure import DailyClosure
+from app.models.status_report import StatusReport
+from app.models.task import Task
 from app.models.user import User
 
 logger = logging.getLogger("turbolog.audit")
@@ -80,6 +82,26 @@ class UserSummary(BaseModel):
     reported_days: int
     faltas: int
     falta_dates: list[date]
+
+
+class StatusReportEntry(BaseModel):
+    """One status row a user reported: content + task + JIRA-posted flag."""
+
+    report_date: str  # ISO string — lexicographic sort matches chronological
+    task_key: str
+    task_summary: str | None  # None when the task no longer exists in JIRA
+    content: str
+    posted_to_jira: bool  # jira_comment_id is not None
+    updated_at: str
+
+
+class UserMonthStatuses(BaseModel):
+    """All status reports a user filed in a month (admin detailed view)."""
+
+    user_id: str
+    user_email: str
+    user_name: str
+    reports: list[StatusReportEntry]
 
 
 # --------------------------------------------------------------------------- #
@@ -159,6 +181,53 @@ async def fetch_reported_dates(
             )
             continue
     return reported
+
+
+async def fetch_user_month_statuses(
+    session_factory: SessionFactory,
+    user_id: str,
+    year: int,
+    month: int,
+) -> list[StatusReportEntry]:
+    """Return the status reports a user filed in a given month, enriched with
+    each task's summary and whether it was posted to JIRA.
+
+    No audit-period gating — this shows everything the user reported in the
+    month regardless of whether the audit window was open.
+    """
+    month_prefix = f"{year}-{month:02d}-"
+    async with session_factory() as session:
+        result = await session.execute(
+            select(StatusReport).where(
+                StatusReport.user_id == user_id,
+                StatusReport.report_date.like(f"{month_prefix}%"),
+            ).order_by(StatusReport.report_date, StatusReport.task_key)
+        )
+        reports = result.scalars().all()
+
+        task_keys = [r.task_key for r in reports]
+        summaries: dict[str, str] = {}
+        if task_keys:
+            task_result = await session.execute(
+                select(Task).where(
+                    Task.user_id == user_id,
+                    Task.jira_key.in_(task_keys),
+                )
+            )
+            for task in task_result.scalars().all():
+                summaries[task.jira_key] = task.summary
+
+    return [
+        StatusReportEntry(
+            report_date=r.report_date,
+            task_key=r.task_key,
+            task_summary=summaries.get(r.task_key),
+            content=r.content,
+            posted_to_jira=r.jira_comment_id is not None,
+            updated_at=r.updated_at,
+        )
+        for r in reports
+    ]
 
 
 async def fetch_audit_periods(

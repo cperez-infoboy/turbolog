@@ -22,6 +22,8 @@ from app.config import settings
 from app.dependencies import get_current_user
 from app.models.allowed_email import AllowedEmail
 from app.models.audit_period import AuditPeriod
+from app.models.status_report import StatusReport
+from app.models.task import Task
 from app.models.user import User
 from app.routers import audit as audit_router
 
@@ -649,3 +651,143 @@ class TestToggleAuditPeriod:
                 )
             ).scalars().all()
         assert len(periods) == 0
+
+
+# --------------------------------------------------------------------------- #
+# GET /api/audit/monthly/{user_id}/statuses — detailed per-user status content
+# --------------------------------------------------------------------------- #
+
+
+class TestUserMonthStatuses:
+    async def test_returns_reports_with_content_and_jira_flag(
+        self, admin_client, session_factory, monkeypatch
+    ):
+        """Admin fetches a user's reported statuses for a month → content,
+        task summary, and posted-to-JIRA flag per report."""
+        monkeypatch.setattr(settings, "ADMIN_EMAILS", "")
+        target = await _seed_user(
+            session_factory, "dev@x.com", name="Dev", is_audited=True,
+            google_sub="g-dev",
+        )
+        async with session_factory() as s:
+            s.add(Task(user_id=target.id, jira_key="PROJ-1",
+                       summary="Login OAuth", status="In Progress"))
+            s.add(Task(user_id=target.id, jira_key="PROJ-2",
+                       summary="Bug session", status="In Progress"))
+            await s.commit()
+        async with session_factory() as s:
+            s.add(StatusReport(
+                user_id=target.id, task_key="PROJ-1", report_date="2026-07-21",
+                content="Avance login OAuth", jira_comment_id="jira-100",
+            ))
+            s.add(StatusReport(
+                user_id=target.id, task_key="PROJ-2", report_date="2026-07-21",
+                content="Fix session expire", jira_comment_id=None,
+            ))
+            await s.commit()
+
+        resp = await admin_client.get(
+            f"/api/audit/monthly/{target.id}/statuses",
+            params={"year": 2026, "month": 7},
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["user_id"] == target.id
+        assert body["user_email"] == "dev@x.com"
+        assert body["user_name"] == "Dev"
+        reports = body["reports"]
+        assert len(reports) == 2
+        # Ordered by report_date, then task_key.
+        assert [r["task_key"] for r in reports] == ["PROJ-1", "PROJ-2"]
+        posted, unposted = reports
+        assert posted["task_summary"] == "Login OAuth"
+        assert posted["content"] == "Avance login OAuth"
+        assert posted["posted_to_jira"] is True
+        assert posted["report_date"] == "2026-07-21"
+        assert unposted["task_summary"] == "Bug session"
+        assert unposted["posted_to_jira"] is False
+
+    async def test_task_summary_none_when_task_no_longer_exists(
+        self, admin_client, session_factory, monkeypatch
+    ):
+        """A StatusReport whose Task was removed by JIRA sync still shows up,
+        with task_summary=None (outerjoin semantics)."""
+        monkeypatch.setattr(settings, "ADMIN_EMAILS", "")
+        target = await _seed_user(
+            session_factory, "orph@x.com", is_audited=True, google_sub="g-orph",
+        )
+        async with session_factory() as s:
+            s.add(StatusReport(
+                user_id=target.id, task_key="GONE-1", report_date="2026-07-10",
+                content="huérfano", jira_comment_id=None,
+            ))
+            await s.commit()
+
+        resp = await admin_client.get(
+            f"/api/audit/monthly/{target.id}/statuses",
+            params={"year": 2026, "month": 7},
+        )
+        assert resp.status_code == 200, resp.text
+        reports = resp.json()["reports"]
+        assert len(reports) == 1
+        assert reports[0]["task_summary"] is None
+        assert reports[0]["content"] == "huérfano"
+
+    async def test_filters_to_requested_month_only(
+        self, admin_client, session_factory, monkeypatch
+    ):
+        """Statuses from other months must not leak into the response."""
+        monkeypatch.setattr(settings, "ADMIN_EMAILS", "")
+        target = await _seed_user(
+            session_factory, "multi@x.com", is_audited=True, google_sub="g-multi",
+        )
+        async with session_factory() as s:
+            s.add(StatusReport(
+                user_id=target.id, task_key="PROJ-1", report_date="2026-06-30",
+                content="junio", jira_comment_id=None,
+            ))
+            s.add(StatusReport(
+                user_id=target.id, task_key="PROJ-1", report_date="2026-07-15",
+                content="julio", jira_comment_id=None,
+            ))
+            await s.commit()
+
+        resp = await admin_client.get(
+            f"/api/audit/monthly/{target.id}/statuses",
+            params={"year": 2026, "month": 7},
+        )
+        assert resp.status_code == 200, resp.text
+        reports = resp.json()["reports"]
+        assert len(reports) == 1
+        assert reports[0]["content"] == "julio"
+
+    async def test_user_with_no_statuses_returns_empty_list(
+        self, admin_client, session_factory, monkeypatch
+    ):
+        monkeypatch.setattr(settings, "ADMIN_EMAILS", "")
+        target = await _seed_user(
+            session_factory, "empty@x.com", is_audited=True, google_sub="g-empty",
+        )
+        resp = await admin_client.get(
+            f"/api/audit/monthly/{target.id}/statuses",
+            params={"year": 2026, "month": 7},
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["reports"] == []
+
+    async def test_non_admin_gets_403_on_statuses(self, client, session_factory):
+        target = await _seed_user(
+            session_factory, "anyone@x.com", google_sub="g-anyone",
+        )
+        resp = await client.get(
+            f"/api/audit/monthly/{target.id}/statuses",
+            params={"year": 2026, "month": 7},
+        )
+        assert resp.status_code == 403
+
+    async def test_nonexistent_user_returns_404_on_statuses(self, admin_client):
+        resp = await admin_client.get(
+            "/api/audit/monthly/does-not-exist/statuses",
+            params={"year": 2026, "month": 7},
+        )
+        assert resp.status_code == 404

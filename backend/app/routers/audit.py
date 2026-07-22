@@ -18,7 +18,12 @@ from app.jobs.reminder import run_reminder_job
 from app.models.allowed_email import AllowedEmail
 from app.models.audit_period import AuditPeriod
 from app.models.user import User
-from app.services.audit_service import compute_audit_for_all_users, compute_month_audit
+from app.services.audit_service import (
+    UserMonthStatuses,
+    compute_audit_for_all_users,
+    compute_month_audit,
+    fetch_user_month_statuses,
+)
 
 router = APIRouter(prefix="/api/audit", tags=["audit"])
 
@@ -201,6 +206,40 @@ async def user_monthly_report(
         reported_days=audit.reported_days,
         faltas=audit.faltas,
         falta_dates=audit.falta_dates,
+    )
+
+
+@router.get("/monthly/{user_id}/statuses")
+async def user_month_statuses(
+    user_id: str,
+    year: int,
+    month: int,
+    _admin: User = Depends(require_admin),
+):
+    """Detailed status reports a user filed in a month (admin only).
+
+    Unlike ``/monthly/{user_id}``, this does NOT require ``is_audited`` —
+    a user may have reported statuses before or outside an audit window and
+    the admin should still see that content.
+    """
+    if not (1 <= month <= 12):
+        raise HTTPException(422, "month must be 1-12")
+    if year < 2000 or year > 2100:
+        raise HTTPException(422, "year out of range")
+
+    async with async_session() as session:
+        result = await session.execute(select(User).where(User.id == user_id))
+        user = result.scalar_one_or_none()
+
+    if user is None:
+        raise HTTPException(404, "User not found")
+
+    reports = await fetch_user_month_statuses(async_session, user_id, year, month)
+    return UserMonthStatuses(
+        user_id=user.id,
+        user_email=user.email,
+        user_name=user.name,
+        reports=reports,
     )
 
 

@@ -65,6 +65,32 @@ export async function getUserMonthlyAudit(
 	);
 }
 
+export interface StatusReportEntry {
+	report_date: string;
+	task_key: string;
+	task_summary: string | null;
+	content: string;
+	posted_to_jira: boolean;
+	updated_at: string;
+}
+
+export interface UserMonthStatuses {
+	user_id: string;
+	user_email: string;
+	user_name: string;
+	reports: StatusReportEntry[];
+}
+
+export async function getUserMonthStatuses(
+	userId: string,
+	year: number,
+	month: number
+): Promise<UserMonthStatuses> {
+	return api<UserMonthStatuses>(
+		`/api/audit/monthly/${userId}/statuses?year=${year}&month=${month}`
+	);
+}
+
 export async function runReminders(): Promise<{ status: string }> {
 	return api<{ status: string }>('/api/audit/run-reminders', { method: 'POST' });
 }
