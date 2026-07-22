@@ -196,7 +196,8 @@ class TestFetchReportedDates:
 
 class TestComputeMonthAudit:
     async def test_matrix_three_reported_two_faltas(self, session_factory):
-        """5 expected weekdays, 3 closures in range -> reported 3, faltas 2."""
+        """5 weekdays in the first week, today=Fri Jun 5 → expected Mon-Thu (4),
+        reported 3, faltas 1 (today is in-progress, never a falta)."""
         user = await _seed_user(session_factory)
         # Full-month audit period (the common case).
         await _seed_period(session_factory, user.id, "2026-06-01T00:00:00+00:00")
@@ -211,11 +212,29 @@ class TestComputeMonthAudit:
 
         assert isinstance(audit, MonthAudit)
         assert audit.user_id == user.id
-        # Only the first week Mon-Fri (<= today=Fri Jun 5).
-        assert audit.expected_days == 5
+        # Today (Fri Jun 5) is in-progress → excluded. Expected = Mon-Thu = 4.
+        assert audit.expected_days == 4
         assert audit.reported_days == 3
-        assert audit.faltas == 2
-        assert audit.falta_dates == [date(2026, 6, 3), date(2026, 6, 5)]
+        assert audit.faltas == 1
+        assert audit.falta_dates == [date(2026, 6, 3)]
+
+    async def test_today_in_progress_never_a_falta(self, session_factory):
+        """The current day is never counted as a falta even without a closure:
+        it can still be closed before end of day."""
+        user = await _seed_user(session_factory)
+        await _seed_period(session_factory, user.id, "2026-06-01T00:00:00+00:00")
+        # Only Mon and Tue have closures; today is Wed Jun 3 (no closure yet).
+        await _seed_closure(session_factory, user.id, "2026-06-01")
+        await _seed_closure(session_factory, user.id, "2026-06-02")
+
+        audit = await compute_month_audit(
+            session_factory, user.id, 2026, 6, today=date(2026, 6, 3)
+        )
+        # Expected = Mon, Tue (Wed today excluded). Both reported → 0 faltas.
+        assert audit.expected_days == 2
+        assert audit.reported_days == 2
+        assert audit.faltas == 0
+        assert date(2026, 6, 3) not in audit.falta_dates
 
     async def test_mid_month_excludes_future_weekdays(self, session_factory):
         user = await _seed_user(session_factory)
@@ -225,12 +244,13 @@ class TestComputeMonthAudit:
         await _seed_closure(session_factory, user.id, "2026-06-02")
         await _seed_closure(session_factory, user.id, "2026-06-03")
 
-        # today = Wed Jun 3 (mid-month). Thu Jun 4 & Fri Jun 5 are future.
+        # today = Wed Jun 3 (mid-month). Tue Jun 2 is the last elapsed day:
+        # Wed (today) is excluded, Thu/Fri are future.
         audit = await compute_month_audit(
             session_factory, user.id, 2026, 6, today=date(2026, 6, 3)
         )
-        assert audit.expected_days == 3  # Mon, Tue, Wed
-        assert audit.reported_days == 3
+        assert audit.expected_days == 2  # Mon, Tue
+        assert audit.reported_days == 2
         assert audit.faltas == 0
         assert audit.falta_dates == []
 
@@ -240,15 +260,15 @@ class TestComputeMonthAudit:
         audit = await compute_month_audit(
             session_factory, user.id, 2026, 6, today=date(2026, 6, 5)
         )
-        assert audit.expected_days == 5
+        # Today (Fri Jun 5) excluded → expected Mon-Thu = 4, all faltas.
+        assert audit.expected_days == 4
         assert audit.reported_days == 0
-        assert audit.faltas == 5
+        assert audit.faltas == 4
         assert audit.falta_dates == [
             date(2026, 6, 1),
             date(2026, 6, 2),
             date(2026, 6, 3),
             date(2026, 6, 4),
-            date(2026, 6, 5),
         ]
 
 
@@ -269,9 +289,10 @@ class TestComputeUserMonthSummary:
 
         assert isinstance(summary, UserSummary)
         assert summary.month == "2026-06"
-        assert summary.expected_days == 5
+        # Today (Fri Jun 5) excluded → expected Mon-Thu = 4.
+        assert summary.expected_days == 4
         assert summary.reported_days == 1
-        assert summary.faltas == 4
+        assert summary.faltas == 3
 
 
 # --------------------------------------------------------------------------- #
@@ -486,7 +507,8 @@ class TestComputeMonthAuditWithPeriods:
         assert audit.expected_days == 5
 
     async def test_open_period_extends_through_today(self, session_factory):
-        """Open period (ended_at=None) counts through today."""
+        """Open period (ended_at=None) counts up to the last elapsed day
+        (today itself is in-progress and excluded)."""
         user = await _seed_user(session_factory)
         await _seed_period(
             session_factory, user.id,
@@ -498,5 +520,5 @@ class TestComputeMonthAuditWithPeriods:
             session_factory, user.id, 2026, 6,
             today=date(2026, 6, 5),
         )
-        # Full first week Mon-Fri = 5.
-        assert audit.expected_days == 5
+        # First week Mon-Thu = 4 (Fri Jun 5 is today → excluded).
+        assert audit.expected_days == 4

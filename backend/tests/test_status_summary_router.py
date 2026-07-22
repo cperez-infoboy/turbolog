@@ -97,9 +97,9 @@ class TestSummaryEndpoint:
         assert resp.status_code == 200, resp.text
         body = resp.json()
         assert body["month"] == "2026-06"
-        assert body["expected_days"] == 5  # Mon-Fri Jun 1..5
+        assert body["expected_days"] == 4  # Mon-Thu Jun 1..4 (today Fri Jun 5 excluded)
         assert body["reported_days"] == 1  # only test_user's single closure
-        assert body["faltas"] == 4
+        assert body["faltas"] == 3
 
     async def test_no_closures_all_faltas(self, client, monkeypatch):
         from app.services import audit_service as audit_service_mod

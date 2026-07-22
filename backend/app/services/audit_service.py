@@ -308,6 +308,9 @@ async def compute_month_audit(
 
     month_start, month_end = _month_bounds(year, month)
 
+    # Today is still in progress — only fully-elapsed days can be faltas.
+    last_elapsed = date.fromordinal(today.toordinal() - 1)
+
     # Fetch periods if the caller didn't provide them.
     if audit_periods is None:
         audit_periods = await fetch_audit_periods(
@@ -318,8 +321,8 @@ async def compute_month_audit(
     expected: list[date] = []
     for p_start, p_end in audit_periods:
         range_start = max(p_start, month_start)
-        range_end = min(p_end, month_end, today)
-        expected.extend(expected_weekdays(range_start, range_end, today))
+        range_end = min(p_end, month_end, last_elapsed)
+        expected.extend(expected_weekdays(range_start, range_end, last_elapsed))
     expected = sorted(set(expected))
 
     reported = await fetch_reported_dates(session_factory, user_id, month_start, month_end)
