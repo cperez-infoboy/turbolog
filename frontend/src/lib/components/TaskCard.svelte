@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { untrack } from 'svelte';
 	import { ApiError } from '$lib/api/client';
-	import { closeTask } from '$lib/api/tasks';
+	import { closeTask, cancelClose } from '$lib/api/tasks';
 	import type { Task } from '$lib/api/tasks';
 	import type { StatusReportWithSummary } from '$lib/api/status';
 	import { createReport, improveStatus, updateReport } from '$lib/api/status';
@@ -38,6 +38,7 @@
 	let improveError = $state<string | null>(null);
 	let revealTimer: ReturnType<typeof setInterval> | undefined; // non-reactive handle
 	let closing = $state(false);
+	let canceling = $state(false);
 	let closeError = $state<string | null>(null);
 	let textareaEl: HTMLTextAreaElement | undefined = $state();
 	let cardEl: HTMLDivElement | undefined = $state();
@@ -81,8 +82,8 @@
 		textareaEl.style.height = textareaEl.scrollHeight + 'px';
 	}
 
-	async function handleSave() {
-		if (!content.trim()) return;
+	async function handleSave(): Promise<boolean> {
+		if (!content.trim()) return true;
 		saving = true;
 		saveState = 'saving';
 
@@ -94,8 +95,10 @@
 			}
 			saveState = 'saved';
 			onReportSaved?.();
+			return true;
 		} catch {
 			saveState = 'unsaved';
+			return false;
 		} finally {
 			saving = false;
 		}
@@ -158,21 +161,63 @@
 		onclick?.(task);
 	}
 
+	// The header is a div[role=button] (it contains a real <a> for the JIRA link,
+	// which can't nest inside a <button>). Activating via keyboard must mirror a
+	// native button: Enter or Space toggles. Space is preventDefault'd so it never
+	// scrolls the page.
+	function handleHeaderKeydown(event: KeyboardEvent) {
+		if (event.key === 'Enter' || event.key === ' ') {
+			event.preventDefault();
+			onclick?.(task);
+		}
+	}
+
+	// Clicking the task-key link must open JIRA without toggling the card.
+	function handleKeyClick(event: MouseEvent) {
+		event.stopPropagation();
+	}
+
 	async function handleCloseTask() {
 		if (closing) return;
 		closeError = null;
-		if (!confirm(`¿Cerrar la tarea ${task.jira_key} en JIRA? Se marcará como Done.`)) return;
+		if (!content.trim()) {
+			closeError = 'Debes ingresar un status antes de cerrar la tarea.';
+			return;
+		}
+		const hasUnsavedDraft = saveState === 'unsaved';
+		const message = hasUnsavedDraft
+			? 'Se guardará el status y la tarea se cerrará en JIRA al cerrar el día. ¿Continuar?'
+			: 'La tarea se cerrará en JIRA al cerrar el día. ¿Continuar?';
+		if (!confirm(message)) return;
+		if (hasUnsavedDraft) {
+			const ok = await handleSave();
+			if (!ok) {
+				closeError = 'No se pudo guardar el status. Intenta nuevamente.';
+				return;
+			}
+		}
 		closing = true;
 		try {
-			await closeTask(task.jira_key);
+			await closeTask(task.jira_key, date);
 			onTaskClosed?.();
-		} catch (err) {
-			closeError =
-				err instanceof ApiError && err.status === 409
-					? 'La tarea no se puede cerrar desde su estado actual.'
-					: 'No se pudo cerrar la tarea. Intenta nuevamente.';
+		} catch {
+			closeError = 'No se pudo marcar la tarea para cierre. Intenta nuevamente.';
 		} finally {
 			closing = false;
+		}
+	}
+
+	async function handleCancelClose() {
+		if (canceling) return;
+		closeError = null;
+		canceling = true;
+		try {
+			await cancelClose(task.jira_key, date);
+			onTaskClosed?.();
+		} catch {
+			closeError = 'No se pudo cancelar el cierre. Intenta nuevamente.';
+		} finally {
+			canceling = false;
 		}
 	}
 
@@ -244,9 +289,22 @@
 	class="task-card {selected ? 'selected' : ''} {report ? 'has-report' : ''}"
 	bind:this={cardEl}
 >
-	<button class="card-header" onclick={handleHeaderClick}>
+	<div class="card-header" role="button" tabindex="0" onclick={handleHeaderClick} onkeydown={handleHeaderKeydown}>
 		<div class="task-row">
-			<span class="task-key">{task.jira_key}</span>
+			{#if task.browse_url}
+				<a
+					class="task-key"
+					href={task.browse_url}
+					target="_blank"
+					rel="noopener noreferrer"
+					onclick={handleKeyClick}
+					title="Abrir en JIRA"
+				>
+					{task.jira_key}
+				</a>
+			{:else}
+				<span class="task-key">{task.jira_key}</span>
+			{/if}
 			{#if task.priority}
 				<span class="priority-dot" title={task.priority}></span>
 			{/if}
@@ -273,26 +331,24 @@
 			<span class="expand-icon" class:open={selected}>
 			</span>
 		</div>
-	</button>
+	</div>
 
 	<div class="accordion-body" class:expanded={selected}>
 		<div class="accordion-inner">
 			<div class="card-actions">
-				{#if task.browse_url}
-					<a class="jira-link" href={task.browse_url} target="_blank" rel="noopener">
-						Abrir en JIRA ↗
-					</a>
-				{/if}
 				{#if task.status_category === 'indeterminate'}
-					<Button
-						variant="danger"
-						size="sm"
-						onclick={handleCloseTask}
-						disabled={closing}
-						loading={closing}
-					>
-						Cerrar tarea
-					</Button>
+					{#if report?.pending_close && !report?.closed_at}
+						<span class="pending-close-badge">Se cerrará al cerrar el día</span>
+						<Button
+							variant="secondary"
+							size="sm"
+							onclick={handleCancelClose}
+							disabled={canceling}
+							loading={canceling}
+						>
+							Cancelar cierre
+						</Button>
+					{/if}
 					{#if closeError}
 						<span class="improve-error">{closeError}</span>
 					{/if}
@@ -380,14 +436,26 @@
 									? 'Guardando...'
 									: 'Sin guardar'}
 						</span>
-						<Button
-							variant="cta"
-							onclick={handleSave}
-							disabled={!content.trim() || saving || improving || revealing}
-							loading={saving}
-						>
-							Guardar
-						</Button>
+						<div class="footer-actions">
+							{#if !(report?.pending_close && !report?.closed_at)}
+								<Button
+									variant="danger"
+									onclick={handleCloseTask}
+									disabled={closing || improving || revealing || !content.trim()}
+									loading={closing}
+								>
+									Cerrar tarea
+								</Button>
+							{/if}
+							<Button
+								variant="cta"
+								onclick={handleSave}
+								disabled={!content.trim() || saving || improving || revealing}
+								loading={saving}
+							>
+								Guardar
+							</Button>
+						</div>
 					</div>
 				{/if}
 			{:else}
@@ -444,12 +512,28 @@
 		justify-content: space-between;
 	}
 
+	.card-header:focus-visible {
+		outline: 2px solid var(--neon-cyan);
+		outline-offset: -2px;
+	}
+
 	.task-key {
 		font-family: var(--font-heading);
 		font-size: 0.8rem;
 		font-weight: 700;
 		color: var(--neon-cyan);
 		letter-spacing: 0.05em;
+	}
+
+	a.task-key {
+		text-decoration: none;
+		cursor: pointer;
+		transition: text-shadow var(--transition-speed) ease;
+	}
+
+	a.task-key:hover {
+		text-decoration: underline;
+		text-shadow: 0 0 8px rgba(0, 255, 255, 0.4);
 	}
 
 	.priority-dot {
@@ -642,6 +726,17 @@
 		border: 1px solid rgba(0, 255, 136, 0.2);
 	}
 
+	.pending-close-badge {
+		font-family: var(--font-body);
+		font-size: 0.7rem;
+		font-weight: 600;
+		color: #ffaa00;
+		background: rgba(255, 170, 0, 0.1);
+		padding: 0.15rem 0.5rem;
+		border-radius: 4px;
+		border: 1px solid rgba(255, 170, 0, 0.2);
+	}
+
 	.expand-icon {
 		margin-left: auto;
 		width: 0;
@@ -736,24 +831,16 @@
 		flex-wrap: wrap;
 	}
 
-	.jira-link {
-		font-family: var(--font-body);
-		font-size: 0.8rem;
-		font-weight: 600;
-		color: var(--neon-cyan);
-		text-decoration: none;
-		transition: text-shadow var(--transition-speed) ease;
-	}
-
-	.jira-link:hover {
-		text-decoration: underline;
-		text-shadow: 0 0 8px rgba(0, 255, 255, 0.3);
-	}
-
 	.editor-footer {
 		display: flex;
 		align-items: center;
 		justify-content: space-between;
+	}
+
+	.footer-actions {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.5rem;
 	}
 
 	.editor-toolbar {

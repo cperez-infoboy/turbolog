@@ -1,7 +1,7 @@
 <script lang="ts">
 	import type { Task } from '$lib/api/tasks';
 	import type { StatusReportWithSummary } from '$lib/api/status';
-	import { getTasksState, toggleSortDirection, setTaskFilter } from '$lib/stores/tasks.svelte';
+	import { getTasksState, toggleSortDirection, setTaskFilter, fetchTasks } from '$lib/stores/tasks.svelte';
 	import type { SortDirection } from '$lib/stores/tasks.svelte';
 	import { SvelteSet } from 'svelte/reactivity';
 	import TaskCard from './TaskCard.svelte';
@@ -203,6 +203,28 @@
 				<button
 					type="button"
 					class="icon-btn"
+					class:spinning={loading}
+					title="Actualizar tareas"
+					aria-label="Actualizar tareas"
+					disabled={loading}
+					onclick={() => fetchTasks(true)}
+				>
+					<svg
+						viewBox="0 0 24 24"
+						fill="none"
+						stroke="currentColor"
+						stroke-width="2"
+						stroke-linecap="round"
+						stroke-linejoin="round"
+						aria-hidden="true"
+					>
+						<path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8" />
+						<path d="M21 3v5h-5" />
+					</svg>
+				</button>
+				<button
+					type="button"
+					class="icon-btn"
 					title={expandAllLabel}
 					aria-label={expandAllLabel}
 					onclick={toggleAll}
@@ -345,11 +367,27 @@
 		height: 1.1rem;
 	}
 
-	.icon-btn:hover {
+	.icon-btn:not(:disabled):hover {
 		color: var(--neon-cyan);
 		background: var(--glass-bg-hover);
 		border-color: var(--glass-border-hover);
 		box-shadow: 0 0 8px rgba(0, 255, 255, 0.2);
+	}
+
+	.icon-btn:disabled {
+		opacity: 0.5;
+		cursor: not-allowed;
+	}
+
+	/* Refresh button: spin the glyph while a fetch is in flight. */
+	.icon-btn.spinning svg {
+		animation: icon-btn-spin 0.8s linear infinite;
+	}
+
+	@keyframes icon-btn-spin {
+		to {
+			transform: rotate(360deg);
+		}
 	}
 
 	.icon-btn:focus-visible {
